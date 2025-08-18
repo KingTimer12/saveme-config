@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -15,10 +15,10 @@ use crate::storage::{blobs::BlobPayload, entry::Entry};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Manifest {
-    name: String,
-    created_at: String,
-    os_source: String,
-    entries: Vec<Entry>,
+    pub name: String,
+    pub created_at: String,
+    pub os_source: String,
+    pub entries: Vec<Entry>,
     blobs: HashMap<String, BlobPayload>,
 }
 
@@ -33,14 +33,28 @@ impl Manifest {
         }
     }
 
-    fn storage_dir(&mut self) -> PathBuf {
+    pub fn base_storage_dir() -> Result<PathBuf, anyhow::Error> {
         let proj = directories::ProjectDirs::from("com", "you", "saveconfig")
-            .expect("cannot get project dir");
-        proj.data_local_dir().join("saveconfig")
+            .ok_or_else(|| anyhow!("cannot get project dir"))?;
+        Ok(proj.data_local_dir().to_path_buf())
+    }
+
+    pub fn load_from(name: &str) -> Result<Self, anyhow::Error> {
+        let manifest_path = Self::base_storage_dir()?.join(name).join("manifest.json");
+        let content = fs::read_to_string(manifest_path)?;
+        let mut manifest: Manifest = serde_json::from_str(&content)?;
+        manifest.ingest_blobs_dir()?;
+        Ok(manifest)
+    }
+
+    fn backup_dir(&self) -> Result<PathBuf, anyhow::Error> {
+        Ok(Self::base_storage_dir()?.join(&self.name))
     }
     
     pub fn save(&mut self) -> Result<(), anyhow::Error> {
-        let manifest_path = self.storage_dir().join("manifest.json");
+        let backup_dir = self.backup_dir()?;
+        fs::create_dir_all(&backup_dir)?;
+        let manifest_path = backup_dir.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_string_pretty(self)?)?;
         Ok(())
     }
@@ -50,7 +64,7 @@ impl Manifest {
         src: &Path,
         target_hint: &str,
     ) -> Result<(), anyhow::Error> {
-        let blob_dir = self.storage_dir().join("blobs");
+        let blob_dir = self.backup_dir()?.join("blobs");
         fs::create_dir_all(&blob_dir)?;
 
         // Cria TAR na memória
@@ -88,8 +102,10 @@ impl Manifest {
     }
 
     pub fn ingest_blobs_dir(&mut self) -> Result<(), anyhow::Error> {
-        let blob_dir = self.storage_dir().join("blobs");
-        fs::create_dir_all(&blob_dir)?;
+        let blob_dir = self.backup_dir()?.join("blobs");
+        if !blob_dir.exists() {
+            return Ok(());
+        }
         for entry in WalkDir::new(blob_dir).min_depth(1).max_depth(1) {
             let entry = entry?;
             if !entry.file_type().is_file() {
@@ -118,28 +134,7 @@ impl Manifest {
         Ok(())
     }
 
-    pub fn resolve_target_hint(&self, target_hint: &str) -> Result<PathBuf, anyhow::Error> {
-        // Mapeamentos de exemplo; ajuste conforme seus apps
-        #[cfg(target_os = "linux")]
-        let table: HashMap<&str, &str> = HashMap::from([
-            ("app:zed:settings", "${HOME}/.config/zed/settings.json"),
-            // ("app:vscode:user_settings", "${HOME}/.config/Code/User/settings.json"),
-        ]);
-
-        #[cfg(target_os = "windows")]
-        let table: HashMap<&str, &str> = HashMap::from([
-            ("app:zed:settings", "${APPDATA}\\Zed\\settings.json"),
-            // ("app:vscode:user_settings", "${APPDATA}\\Code\\User\\settings.json"),
-        ]);
-
-        let tmpl = table
-            .get(target_hint)
-            .ok_or_else(|| anyhow!("target_hint não mapeado: {target_hint}"))?;
-
-        self.expand_placeholders(tmpl)
-    }
-
-    fn restore_blob_to(&self, entry: &Entry) -> Result<(), anyhow::Error> {
+    pub fn restore_blob_to(&self, entry: &Entry, dest: &Path) -> Result<(), anyhow::Error> {
         let blob = self
             .blobs
             .get(&entry.blob_id)
@@ -157,7 +152,6 @@ impl Manifest {
             other => return Err(anyhow!("formato de blob desconhecido: {}", other)),
         };
 
-        let dest = self.resolve_target_hint(&entry.target_hint)?;
         fs::create_dir_all(
             dest.parent()
                 .ok_or_else(|| anyhow!("dest sem parent: {}", dest.display()))?,
@@ -195,36 +189,5 @@ impl Manifest {
         }
 
         Ok(())
-    }
-
-    fn expand_placeholders(&self, tmpl: &str) -> Result<PathBuf, anyhow::Error> {
-        let mut s = tmpl.to_string();
-
-        // HOME (Linux/macOS principalmente)
-        if s.contains("${HOME}") {
-            let home = self.dirs_home()?;
-            s = s.replace("${HOME}", &home.to_string_lossy());
-        }
-        // USERPROFILE (Windows)
-        if s.contains("${USERPROFILE}") {
-            let up = env::var("USERPROFILE").unwrap_or_default();
-            s = s.replace("${USERPROFILE}", &up);
-        }
-        // APPDATA (Windows)
-        if s.contains("${APPDATA}") {
-            let ap = env::var("APPDATA").unwrap_or_default();
-            s = s.replace("${APPDATA}", &ap);
-        }
-        // LOCALAPPDATA (Windows)
-        if s.contains("${LOCALAPPDATA}") {
-            let lap = env::var("LOCALAPPDATA").unwrap_or_default();
-            s = s.replace("${LOCALAPPDATA}", &lap);
-        }
-
-        Ok(PathBuf::from(s))
-    }
-
-    fn dirs_home(&self) -> Result<PathBuf, anyhow::Error> {
-        dirs::home_dir().ok_or_else(|| anyhow!("não foi possível detectar HOME"))
     }
 }
