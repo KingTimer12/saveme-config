@@ -12,12 +12,16 @@ impl App for WindowsTerminal {
     fn name(&self) -> &'static str {
         "Windows Terminal"
     }
-
-    fn is_installed(&self) -> bool {
-        self.config_path().map(|p| p.exists()).unwrap_or(false)
+    
+    fn snap_support(&self) -> bool {
+        false
     }
 
-    fn config_path(&self) -> Result<PathBuf> {
+    fn is_installed(&self) -> bool {
+        self.app_path().map(|p| p.exists()).unwrap_or(false)
+    }
+    
+    fn app_path(&self) -> Result<PathBuf> {
         if !cfg!(target_os = "windows") {
             return Err(anyhow!("Windows Terminal is only available on Windows."));
         }
@@ -26,16 +30,36 @@ impl App for WindowsTerminal {
             .map(PathBuf::from)
             .map_err(|e| anyhow!("Failed to get LOCALAPPDATA: {}", e))?;
 
-        // This is a known constant path for Windows Terminal
-        Ok(local_appdata
+        let base_path = local_appdata
             .join("Packages")
             .join("Microsoft.WindowsTerminal_8wekyb3d8bbwe")
-            .join("LocalState")
-            .join("settings.json"))
+            .join("LocalState");
+
+        Ok(base_path)
+    }
+
+    fn config_path(&self) -> Result<Vec<PathBuf>> {
+        let base_path = self.app_path()?;
+        let mut paths = Vec::new();
+
+        if base_path.exists() {
+            match std::fs::read_dir(&base_path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        if let Ok(entry) = entry {
+                            paths.push(entry.path());
+                        }
+                    }
+                }
+                Err(e) => return Err(anyhow!("Failed to read directory: {}", e)),
+            }
+        }
+
+        Ok(paths)
     }
 
     fn target_hint(&self) -> &'static str {
-        "sys:windows-terminal:settings"
+        "sys:windows-terminal"
     }
 
     fn package_id(&self) -> Option<&'static str> {

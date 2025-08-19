@@ -18,9 +18,11 @@ pub trait App: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn is_installed(&self) -> bool;
-    fn config_path(&self) -> Result<PathBuf>;
+    fn config_path(&self) -> Result<Vec<PathBuf>>;
+    fn app_path(&self) -> Result<PathBuf>;
     fn target_hint(&self) -> &'static str;
     fn package_id(&self) -> Option<&'static str>;
+    fn snap_support(&self) -> bool;
 }
 
 pub static REGISTRY: Lazy<Vec<Box<dyn App>>> = Lazy::new(|| {

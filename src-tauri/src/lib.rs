@@ -33,11 +33,16 @@ fn save_config(name: &str, app_ids: Vec<String>) -> Result<String, String> {
     for app_id in app_ids {
         if let Some(app) = apps::get_app(&app_id) {
             if app.is_installed() {
+                println!("Processing app: {}", app.name());
                 if let Ok(path) = app.config_path() {
+                    println!("Processing config file: {}", path.display());
                     if path.exists() {
+                        println!("Config file exists");
+                        println!("Creating blob from file");
                         manifest
                             .create_blob_from_file(&path, app.target_hint())
                             .map_err(|e| e.to_string())?;
+                        println!("Blob created successfully");
                     }
                 }
             }

@@ -12,14 +12,18 @@ impl App for VSCode {
     fn name(&self) -> &'static str {
         "Visual Studio Code"
     }
-
-    fn is_installed(&self) -> bool {
-        self.config_path().map(|p| p.exists()).unwrap_or(false)
+    
+    fn snap_support(&self) -> bool {
+        false
     }
 
-    fn config_path(&self) -> Result<PathBuf> {
+    fn is_installed(&self) -> bool {
+        self.app_path().map(|p| p.exists()).unwrap_or(false)
+    }
+    
+    fn app_path(&self) -> Result<PathBuf> {
         let platform = tauri_plugin_os::platform();
-        let config_dir = if platform == "windows" {
+        let app_dir = if platform == "windows" {
             std::env::var("APPDATA").map(PathBuf::from)
                 .map_err(|e| anyhow!("Failed to get APPDATA: {}", e))?
                 .join("Code")
@@ -36,11 +40,27 @@ impl App for VSCode {
                 .map_err(|e| anyhow!("Failed to get config dir: {}", e))?
                 .join("Code")
         };
-        Ok(config_dir.join("User").join("settings.json"))
+        Ok(app_dir)
+    }
+
+    fn config_path(&self) -> Result<Vec<PathBuf>> {
+        let app_dir = self.app_path()?;
+        
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(&app_dir)
+            .map_err(|e| anyhow!("Failed to read vscode config directory: {}", e))? {
+            let entry = entry.map_err(|e| anyhow!("Failed to read directory entry: {}", e))?;
+            let path = entry.path();
+            if path.is_file() {
+                files.push(path);
+            }
+        }
+
+        Ok(files)
     }
 
     fn target_hint(&self) -> &'static str {
-        "app:vscode:settings"
+        "app:vscode"
     }
 
     fn package_id(&self) -> Option<&'static str> {

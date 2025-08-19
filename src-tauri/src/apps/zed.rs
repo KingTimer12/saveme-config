@@ -12,12 +12,16 @@ impl App for Zed {
     fn name(&self) -> &'static str {
         "Zed"
     }
-
-    fn is_installed(&self) -> bool {
-        self.config_path().map(|p| p.exists()).unwrap_or(false)
+    
+    fn snap_support(&self) -> bool {
+        true
     }
 
-    fn config_path(&self) -> Result<PathBuf> {
+    fn is_installed(&self) -> bool {
+        self.app_path().map(|p| p.exists()).unwrap_or(false)
+    }
+    
+    fn app_path(&self) -> Result<PathBuf> {
         let platform = tauri_plugin_os::platform();
         let config_dir = if platform == "windows" {
             std::env::var("APPDATA").map(PathBuf::from)
@@ -31,11 +35,31 @@ impl App for Zed {
                 .map_err(|e| anyhow!("Failed to get config dir: {}", e))?;
             config_home
         };
-        Ok(config_dir.join("zed").join("settings.json"))
+
+        let zed_dir = config_dir.join("zed");
+        if !zed_dir.exists() {
+            return Err(anyhow!("Zed is not installed"));
+        }
+        Ok(zed_dir)
+    }
+
+    fn config_path(&self) -> Result<Vec<PathBuf>> {
+        let zed_dir = self.app_path()?;
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(&zed_dir)
+            .map_err(|e| anyhow!("Failed to read zed config directory: {}", e))? {
+            let entry = entry.map_err(|e| anyhow!("Failed to read directory entry: {}", e))?;
+            let path = entry.path();
+            if path.is_file() {
+                files.push(path);
+            }
+        }
+
+        Ok(files)
     }
 
     fn target_hint(&self) -> &'static str {
-        "app:zed:settings"
+        "app:zed"
     }
 
     fn package_id(&self) -> Option<&'static str> {
@@ -45,7 +69,7 @@ impl App for Zed {
         // On Windows, it's a winget package: "Zed.Zed"
         // For now, we will return a value for macOS to test, but a more robust
         // solution would check the OS.
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
             Some("zed")
         } else {
             None

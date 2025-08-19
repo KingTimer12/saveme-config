@@ -2,10 +2,18 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Button } from "./components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "./components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "./components/ui/card";
 import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
+import { toast } from "sonner";
 
 // Define the types for the data from the backend
 interface AppInfo {
@@ -61,7 +69,7 @@ function App() {
   };
 
   const handleAppSelection = (appId: string) => {
-    setSelectedApps(prev => {
+    setSelectedApps((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(appId)) {
         newSet.delete(appId);
@@ -81,7 +89,7 @@ function App() {
       setError("Please select at least one application to back up.");
       return;
     }
-
+    const toastId = toast.loading("Saving backup...");
     setLoading(true);
     setError(null);
     setMessage(null);
@@ -95,7 +103,9 @@ function App() {
       setBackupName("");
       setSelectedApps(new Set());
       fetchBackups(); // Refresh the backup list
+      toast.success("Backup saved successfully!", { id: toastId });
     } catch (e) {
+      toast.error("Failed to save backup!", { id: toastId });
       setError(e as string);
     } finally {
       setLoading(false);
@@ -107,22 +117,24 @@ function App() {
       setError("Please select a backup to restore.");
       return;
     }
-     if (selectedApps.size === 0) {
+    if (selectedApps.size === 0) {
       setError("Please select at least one application to restore.");
       return;
     }
-
+    const toastId = toast.loading("Restoring backup...");
     setLoading(true);
     setError(null);
     setMessage(null);
 
     try {
-       const result = await invoke<string>("restore_config", {
+      const result = await invoke<string>("restore_config", {
         backupName: selectedBackup,
         appIds: Array.from(selectedApps),
       });
       setMessage(result);
+      toast.success("Backup restored successfully!", { id: toastId });
     } catch (e) {
+      toast.error("Failed to restore backup.", { id: toastId });
       setError(e as string);
     } finally {
       setLoading(false);
@@ -133,18 +145,36 @@ function App() {
     <div className="container mx-auto p-4 font-sans bg-background text-foreground">
       <header className="text-center mb-8">
         <h1 className="text-4xl font-bold">SaveMe Config</h1>
-        <p className="text-muted-foreground">Your personal configuration manager.</p>
+        <p className="text-muted-foreground">
+          Your personal configuration manager.
+        </p>
       </header>
 
-      {error && <div className="p-4 mb-4 text-sm text-destructive-foreground bg-destructive rounded-md" role="alert">{error}</div>}
-      {message && <div className="p-4 mb-4 text-sm text-primary-foreground bg-primary rounded-md" role="alert">{message}</div>}
+      {error && (
+        <div
+          className="p-4 mb-4 text-sm text-destructive-foreground bg-destructive rounded-md"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      {message && (
+        <div
+          className="p-4 mb-4 text-sm text-primary-foreground bg-primary rounded-md"
+          role="alert"
+        >
+          {message}
+        </div>
+      )}
 
       <main className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* Backup Section */}
         <Card>
           <CardHeader>
             <CardTitle>Create a Backup</CardTitle>
-            <CardDescription>Select the applications you want to back up.</CardDescription>
+            <CardDescription>
+              Select the applications you want to back up.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
@@ -156,7 +186,10 @@ function App() {
                     checked={selectedApps.has(app.id)}
                     onChange={() => handleAppSelection(app.id)}
                   />
-                  <Label htmlFor={`app-${app.id}`} className={!app.is_installed ? 'text-muted-foreground' : ''}>
+                  <Label
+                    htmlFor={`app-${app.id}`}
+                    className={!app.is_installed ? "text-muted-foreground" : ""}
+                  >
                     {app.name} {!app.is_installed && "(Not Installed)"}
                   </Label>
                 </div>
@@ -183,29 +216,49 @@ function App() {
         <Card>
           <CardHeader>
             <CardTitle>Restore from Backup</CardTitle>
-            <CardDescription>Select a backup and restore its configuration. This may install missing applications.</CardDescription>
+            <CardDescription>
+              Select a backup and restore its configuration. This may install
+              missing applications.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-                <Label>Available Backups</Label>
-                {backups.length === 0 && <p className="text-sm text-muted-foreground">No backups found.</p>}
-                <div className="space-y-2">
-                    {backups.map((backup) => (
-                        <div key={backup.name}
-                             className={`p-2 rounded-md cursor-pointer ${selectedBackup === backup.name ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}
-                             onClick={() => setSelectedBackup(backup.name)}>
-                            <p className="font-semibold">{backup.name}</p>
-                            <p className="text-xs">{new Date(backup.created_at).toLocaleString()}</p>
-                        </div>
-                    ))}
-                </div>
+              <Label>Available Backups</Label>
+              {backups.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No backups found.
+                </p>
+              )}
+              <div className="space-y-2">
+                {backups.map((backup) => (
+                  <div
+                    key={backup.name}
+                    className={`p-2 rounded-md cursor-pointer ${
+                      selectedBackup === backup.name
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted"
+                    }`}
+                    onClick={() => setSelectedBackup(backup.name)}
+                  >
+                    <p className="font-semibold">{backup.name}</p>
+                    <p className="text-xs">
+                      {new Date(backup.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
           </CardContent>
           <CardFooter>
-            <Button onClick={handleRestoreBackup} disabled={loading || !selectedBackup}>
+            <Button
+              onClick={handleRestoreBackup}
+              disabled={loading || !selectedBackup}
+            >
               {loading ? "Restoring..." : "Restore Selected Apps"}
             </Button>
-            <Button variant="outline" onClick={fetchBackups} className="ml-2">Refresh</Button>
+            <Button variant="outline" onClick={fetchBackups} className="ml-2">
+              Refresh
+            </Button>
           </CardFooter>
         </Card>
       </main>

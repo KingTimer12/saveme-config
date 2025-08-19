@@ -65,20 +65,27 @@ impl Manifest {
         target_hint: &str,
     ) -> Result<(), anyhow::Error> {
         let blob_dir = self.backup_dir()?.join("blobs");
+        println!("Creating blob from file");
         fs::create_dir_all(&blob_dir)?;
+        println!("Created blob directory in {}", blob_dir.display());
 
         // Cria TAR na memória
+        println!("Creating TAR archive");
         let mut tar_data = Vec::new();
         {
             let mut builder = Builder::new(&mut tar_data);
-            builder.append_path(src)?;
+            let file_name = src.file_name().ok_or_else(|| anyhow!("Invalid file name"))?;
+            builder.append_path_with_name(src, file_name)?;
             builder.finish()?;
         }
+        println!("Created TAR archive");
 
         // Comprime com zstd
+        println!("Compressing TAR archive");
         let compressed = encode_all(&tar_data[..], 3)?;
 
         // SHA256
+        println!("Calculating SHA256 hash");
         let mut hasher = Sha256::new();
         hasher.update(&compressed);
         let id = hex::encode(hasher.finalize());
@@ -89,6 +96,8 @@ impl Manifest {
             fs::write(&blob_path, &compressed)?;
         }
         
+        println!("Blob saved to disk");
+
         self.entries.push({
             Entry {
                 blob_id: id,
