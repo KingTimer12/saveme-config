@@ -283,13 +283,22 @@ impl Manifest {
 
     // Blob blockchain integrity methods
     pub fn verify_blob_chain_integrity(&self) -> Result<bool, anyhow::Error> {
-        let storage_dir = Self::base_storage_dir()?;
+        // For testing, allow overriding the storage directory
+        self.verify_blob_chain_integrity_with_dir(None)
+    }
+
+    pub fn verify_blob_chain_integrity_with_dir(&self, storage_dir_override: Option<PathBuf>) -> Result<bool, anyhow::Error> {
+        let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
         let chain_manager = BlobChainManager::new(storage_dir)?;
         chain_manager.verify_blob_chain(&self.blobs)
     }
 
     pub fn get_blob_chain_info(&self) -> Result<String, anyhow::Error> {
-        let storage_dir = Self::base_storage_dir()?;
+        self.get_blob_chain_info_with_dir(None)
+    }
+
+    pub fn get_blob_chain_info_with_dir(&self, storage_dir_override: Option<PathBuf>) -> Result<String, anyhow::Error> {
+        let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
         let chain_manager = BlobChainManager::new(storage_dir)?;
         let metadata = chain_manager.get_chain_info();
         Ok(format!(

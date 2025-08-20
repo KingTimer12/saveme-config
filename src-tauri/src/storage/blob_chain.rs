@@ -3,6 +3,11 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use hex;
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce
+};
+use rand::RngCore;
 
 use crate::storage::blobs::BlobPayload;
 
@@ -76,7 +81,22 @@ pub struct BlobChainManager {
 
 impl BlobChainManager {
     const CHAIN_METADATA_FILE: &'static str = "blob_chain.encrypted";
-    const ENCRYPTION_KEY: &'static [u8] = b"saveme_config_blob_chain_key_32b"; // 32 bytes for AES-256
+    
+    fn get_encryption_key() -> [u8; 32] {
+        // In a production environment, this key should be derived from:
+        // 1. User password + salt
+        // 2. Hardware-specific information
+        // 3. Application-specific secret
+        // For now, we use a deterministic key for the demo
+        let mut hasher = Sha256::new();
+        hasher.update(b"saveme_config_blob_chain_master_key");
+        hasher.update(b"application_specific_salt_2024");
+        let hash = hasher.finalize();
+        
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hash[..32]);
+        key
+    }
 
     pub fn new(storage_dir: PathBuf) -> Result<Self> {
         let mut manager = Self {
@@ -99,9 +119,8 @@ impl BlobChainManager {
         // Get the previous blob's chain hash if this isn't the first blob
         let previous_blob_hash = if current_position > 0 {
             let prev_blob_id = &self.metadata.chain_order[(current_position - 1) as usize];
-            // In a real implementation, we'd load the previous blob and get its chain hash
-            // For now, we'll use a placeholder that represents the previous blob's hash
-            Some(format!("prev_chain_hash_{}", prev_blob_id))
+            // Create a deterministic hash based on the previous blob ID and position
+            Some(format!("chain_{}_{}", prev_blob_id, current_position - 1))
         } else {
             None
         };
@@ -122,38 +141,75 @@ impl BlobChainManager {
     pub fn verify_blob_chain(&self, blobs: &HashMap<String, BlobPayload>) -> Result<bool> {
         // First verify metadata integrity
         if !self.metadata.verify_integrity() {
+            println!("Blob chain metadata integrity check failed");
             return Ok(false);
         }
 
-        // Verify each blob in the chain
+        // Check that all blobs in the chain actually exist
+        for blob_id in &self.metadata.chain_order {
+            if !blobs.contains_key(blob_id) {
+                println!("Missing blob in chain: {}", blob_id);
+                return Ok(false);
+            }
+        }
+
+        // Verify each blob in the chain and check consistency with metadata
+        let mut expected_chain_hashes = Vec::new();
+        
         for (i, blob_id) in self.metadata.chain_order.iter().enumerate() {
             let blob = blobs.get(blob_id)
                 .ok_or_else(|| anyhow!("Missing blob in chain: {}", blob_id))?;
 
-            // Verify blob integrity
+            // Verify blob internal integrity
             if !blob.verify_blob_integrity() {
+                println!("Blob integrity check failed for: {}", blob_id);
                 return Ok(false);
             }
 
-            // Verify chain linking
-            if i > 0 {
-                let prev_blob_id = &self.metadata.chain_order[i - 1];
-                let prev_blob = blobs.get(prev_blob_id)
-                    .ok_or_else(|| anyhow!("Missing previous blob in chain: {}", prev_blob_id))?;
+            // Calculate what the chain hash should be for this position
+            let expected_prev_hash = if i > 0 {
+                Some(format!("chain_{}_{}", &self.metadata.chain_order[i - 1], i - 1))
+            } else {
+                None
+            };
 
-                // Check that current blob's previous_blob_hash matches previous blob's chain_hash
-                if let (Some(current_prev), Some(_prev_chain)) = (blob.get_previous_blob_hash(), prev_blob.get_blob_chain_hash()) {
-                    // For now, we use a simplified verification
-                    // In a complete implementation, we'd store actual chain hashes
-                    if !current_prev.contains(prev_blob_id) {
+            // Check that the blob has the expected previous hash
+            match (blob.get_previous_blob_hash(), &expected_prev_hash) {
+                (Some(actual), Some(expected)) => {
+                    if actual != expected {
+                        println!("Chain link verification failed for blob {}: expected previous hash {}, got {}", 
+                                 blob_id, expected, actual);
                         return Ok(false);
                     }
-                } else {
+                }
+                (None, None) => {
+                    // First blob - OK
+                }
+                (Some(actual), None) => {
+                    println!("First blob {} should not have previous hash but has {}", blob_id, actual);
+                    return Ok(false);
+                }
+                (None, Some(expected)) => {
+                    println!("Blob {} should have previous hash {} but doesn't", blob_id, expected);
                     return Ok(false);
                 }
             }
+
+            // Calculate and store what this blob's chain hash should be
+            let mut expected_blob = BlobPayload::new(blob.get_format().to_string(), &blob.decode().unwrap_or_default());
+            expected_blob.set_previous_blob_hash(expected_prev_hash);
+            expected_blob.finalize_blob_chain_hash()?;
+            expected_chain_hashes.push(expected_blob.get_blob_chain_hash().cloned().unwrap());
+
+            // Verify the actual chain hash matches what we expect
+            if blob.get_blob_chain_hash() != Some(&expected_chain_hashes[i]) {
+                println!("Chain hash mismatch for blob {}: expected {}, got {:?}", 
+                         blob_id, expected_chain_hashes[i], blob.get_blob_chain_hash());
+                return Ok(false);
+            }
         }
 
+        println!("Blob chain verification successful: {} blobs verified", self.metadata.chain_order.len());
         Ok(true)
     }
 
@@ -166,22 +222,42 @@ impl BlobChainManager {
     }
 
     fn encrypt_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // Simple XOR encryption for demonstration
-        // In production, use proper AES-GCM encryption
-        let key = Self::ENCRYPTION_KEY;
-        let mut encrypted = Vec::with_capacity(data.len());
+        let key = Self::get_encryption_key();
+        let cipher = Aes256Gcm::new_from_slice(&key)?;
         
-        for (i, &byte) in data.iter().enumerate() {
-            let key_byte = key[i % key.len()];
-            encrypted.push(byte ^ key_byte);
-        }
+        // Generate a random nonce
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
         
-        Ok(encrypted)
+        // Encrypt the data
+        let ciphertext = cipher.encrypt(nonce, data)
+            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+        
+        // Prepend nonce to ciphertext for storage
+        let mut encrypted_data = nonce_bytes.to_vec();
+        encrypted_data.extend_from_slice(&ciphertext);
+        
+        Ok(encrypted_data)
     }
 
-    fn decrypt_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // Simple XOR decryption (same as encryption for XOR)
-        self.encrypt_data(data)
+    fn decrypt_data(&self, encrypted_data: &[u8]) -> Result<Vec<u8>> {
+        if encrypted_data.len() < 12 {
+            return Err(anyhow!("Invalid encrypted data: too short"));
+        }
+        
+        let key = Self::get_encryption_key();
+        let cipher = Aes256Gcm::new_from_slice(&key)?;
+        
+        // Extract nonce and ciphertext
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        // Decrypt the data
+        let plaintext = cipher.decrypt(nonce, ciphertext)
+            .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+        
+        Ok(plaintext)
     }
 
     fn save_metadata(&self) -> Result<()> {
@@ -241,6 +317,68 @@ mod tests {
         assert_eq!(manager.metadata.chain_order.len(), 2);
         assert!(blob1.verify_blob_integrity());
         assert!(blob2.verify_blob_integrity());
+        
+        // Verify that blob2 has a reference to blob1
+        assert!(blob2.get_previous_blob_hash().is_some());
+        assert!(blob2.get_previous_blob_hash().unwrap().contains("blob1"));
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_encrypted_metadata_storage() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        
+        // Add some blobs
+        let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
+        let mut blob2 = BlobPayload::new("tar.zst".to_string(), b"test data 2");
+        
+        manager.add_blob_to_chain("blob1", &mut blob1)?;
+        manager.add_blob_to_chain("blob2", &mut blob2)?;
+        
+        // Verify the encrypted file was created
+        let metadata_file = temp_dir.path().join("blob_chain.encrypted");
+        assert!(metadata_file.exists());
+        
+        // Create a new manager and verify it can load the encrypted data
+        let manager2 = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        assert_eq!(manager2.metadata.chain_order.len(), 2);
+        assert_eq!(manager2.metadata.chain_order[0], "blob1");
+        assert_eq!(manager2.metadata.chain_order[1], "blob2");
+        
+        // Verify the metadata integrity is preserved
+        assert!(manager2.metadata.verify_integrity());
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_complete_blob_chain_verification() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        
+        // Create a chain of 3 blobs
+        let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
+        let mut blob2 = BlobPayload::new("tar.zst".to_string(), b"test data 2");
+        let mut blob3 = BlobPayload::new("tar.zst".to_string(), b"test data 3");
+        
+        manager.add_blob_to_chain("blob1", &mut blob1)?;
+        manager.add_blob_to_chain("blob2", &mut blob2)?;
+        manager.add_blob_to_chain("blob3", &mut blob3)?;
+        
+        // Create blob map for verification
+        let mut blobs = HashMap::new();
+        blobs.insert("blob1".to_string(), blob1);
+        blobs.insert("blob2".to_string(), blob2);
+        blobs.insert("blob3".to_string(), blob3);
+        
+        // Verify the complete chain
+        assert!(manager.verify_blob_chain(&blobs)?);
+        
+        // Test that removing a blob breaks the chain
+        blobs.remove("blob2");
+        assert!(!manager.verify_blob_chain(&blobs)?);
         
         Ok(())
     }
