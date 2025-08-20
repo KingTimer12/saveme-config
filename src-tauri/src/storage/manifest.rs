@@ -11,7 +11,7 @@ use tar::Builder;
 use walkdir::WalkDir;
 use zstd::encode_all;
 
-use crate::storage::{blobs::BlobPayload, entry::Entry};
+use crate::storage::{blobs::BlobPayload, entry::Entry, blob_chain::BlobChainManager};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
@@ -20,9 +20,6 @@ pub struct Manifest {
     pub os_source: String,
     pub entries: Vec<Entry>,
     blobs: HashMap<String, BlobPayload>,
-    // Blockchain integrity fields
-    pub previous_backup_hash: Option<String>,
-    pub backup_chain_hash: Option<String>,
 }
 
 impl Manifest {
@@ -33,8 +30,6 @@ impl Manifest {
             os_source,
             entries: Vec::new(),
             blobs: HashMap::new(),
-            previous_backup_hash: None,
-            backup_chain_hash: None,
         }
     }
 
@@ -57,9 +52,6 @@ impl Manifest {
     }
     
     pub fn save(&mut self) -> Result<(), anyhow::Error> {
-        // Finalizar hash da cadeia blockchain antes de salvar
-        self.finalize_chain_hash()?;
-        
         let backup_dir = self.backup_dir()?;
         fs::create_dir_all(&backup_dir)?;
         let manifest_path = backup_dir.join("manifest.json");
@@ -166,8 +158,18 @@ impl Manifest {
         
         println!("Blob saved to disk");
 
+        // Create blob and add to chain
+        let mut blob = BlobPayload::new("tar.zst".to_string(), &compressed);
+        
+        // Initialize blob chain manager and add blob to chain
+        let storage_dir = Self::base_storage_dir()?;
+        let mut chain_manager = BlobChainManager::new(storage_dir)?;
+        chain_manager.add_blob_to_chain(&id, &mut blob)?;
+        
+        println!("Added blob to blockchain");
+
         // Adicionar blob ao manifest atual
-        self.blobs.insert(id.clone(), BlobPayload::new("tar.zst".to_string(), &compressed));
+        self.blobs.insert(id.clone(), blob);
 
         self.entries.push({
             Entry {
@@ -271,149 +273,39 @@ impl Manifest {
         Ok(())
     }
 
-    // Blockchain integrity methods
-    pub fn calculate_backup_hash(&self) -> Result<String, anyhow::Error> {
-        // Create a canonical representation of the backup for hashing
-        let mut hasher = Sha256::new();
-        
-        // Hash the manifest metadata (excluding chain fields to avoid circular dependency)
-        hasher.update(self.name.as_bytes());
-        hasher.update(self.created_at.as_bytes());
-        hasher.update(self.os_source.as_bytes());
-        
-        // Hash entries in a deterministic order
-        let mut sorted_entries = self.entries.clone();
-        sorted_entries.sort_by(|a, b| a.blob_id.cmp(&b.blob_id));
-        for entry in &sorted_entries {
-            hasher.update(entry.blob_id.as_bytes());
-            hasher.update(entry.target_hint.as_bytes());
-            hasher.update(entry.logical_path.as_bytes());
-            if let Some(tar_member) = &entry.tar_member {
-                hasher.update(tar_member.as_bytes());
-            }
-        }
-        
-        // Hash blobs in a deterministic order
-        let mut sorted_blob_ids: Vec<_> = self.blobs.keys().collect();
-        sorted_blob_ids.sort();
-        for blob_id in sorted_blob_ids {
-            let blob = &self.blobs[blob_id];
-            hasher.update(blob_id.as_bytes());
-            hasher.update(blob.get_format().as_bytes());
-            hasher.update(blob.get_sha256().as_bytes());
-            hasher.update(&blob.get_size().to_le_bytes());
-        }
-        
-        Ok(hex::encode(hasher.finalize()))
+    pub fn get_blobs(&self) -> &HashMap<String, BlobPayload> {
+        &self.blobs
     }
 
-    pub fn set_previous_backup(&mut self, previous_backup_name: &str) -> Result<(), anyhow::Error> {
-        // Load the previous backup and get its chain hash
-        let previous_manifest = Self::load_from(previous_backup_name)?;
-        let previous_hash = previous_manifest.backup_chain_hash
-            .ok_or_else(|| anyhow!("Previous backup has no chain hash"))?;
-        
-        self.previous_backup_hash = Some(previous_hash);
-        Ok(())
+    pub fn add_blob_for_testing(&mut self, blob_id: String, blob: BlobPayload) {
+        self.blobs.insert(blob_id, blob);
     }
 
-    pub fn finalize_chain_hash(&mut self) -> Result<(), anyhow::Error> {
-        let mut hasher = Sha256::new();
-        
-        // Include previous backup hash if available
-        if let Some(prev_hash) = &self.previous_backup_hash {
-            hasher.update(prev_hash.as_bytes());
-        }
-        
-        // Include current backup hash
-        let current_hash = self.calculate_backup_hash()?;
-        hasher.update(current_hash.as_bytes());
-        
-        self.backup_chain_hash = Some(hex::encode(hasher.finalize()));
-        Ok(())
+    // Blob blockchain integrity methods
+    pub fn verify_blob_chain_integrity(&self) -> Result<bool, anyhow::Error> {
+        // For testing, allow overriding the storage directory
+        self.verify_blob_chain_integrity_with_dir(None)
     }
 
-    pub fn verify_backup_integrity(&self) -> Result<bool, anyhow::Error> {
-        // Recalculate the backup hash and compare with stored chain hash
-        let calculated_hash = self.calculate_backup_hash()?;
-        
-        // Verify chain hash
-        let mut hasher = Sha256::new();
-        if let Some(prev_hash) = &self.previous_backup_hash {
-            hasher.update(prev_hash.as_bytes());
-        }
-        hasher.update(calculated_hash.as_bytes());
-        let expected_chain_hash = hex::encode(hasher.finalize());
-        
-        match &self.backup_chain_hash {
-            Some(stored_hash) => Ok(*stored_hash == expected_chain_hash),
-            None => Ok(false), // No chain hash means not properly initialized
-        }
+    pub fn verify_blob_chain_integrity_with_dir(&self, storage_dir_override: Option<PathBuf>) -> Result<bool, anyhow::Error> {
+        let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
+        let chain_manager = BlobChainManager::new(storage_dir)?;
+        chain_manager.verify_blob_chain(&self.blobs)
     }
 
-    pub fn verify_chain_from(&self, start_backup_name: &str) -> Result<bool, anyhow::Error> {
-        let mut current_backup_name = start_backup_name.to_string();
-        let mut visited = std::collections::HashSet::new();
-        
-        loop {
-            // Prevent infinite loops
-            if !visited.insert(current_backup_name.clone()) {
-                return Err(anyhow!("Circular reference detected in backup chain"));
-            }
-            
-            // Load current backup
-            let manifest = if current_backup_name == self.name {
-                self.clone() // Use current instance if it's the same backup
-            } else {
-                Self::load_from(&current_backup_name)?
-            };
-            
-            // Verify this backup's integrity
-            if !manifest.verify_backup_integrity()? {
-                return Ok(false);
-            }
-            
-            // Move to next backup in chain
-            match &manifest.previous_backup_hash {
-                Some(_) => {
-                    // Find the backup that has the matching chain hash
-                    let storage_dir = Self::base_storage_dir()?;
-                    if !storage_dir.exists() {
-                        return Ok(true); // No more backups to verify
-                    }
-                    
-                    let mut found_previous = false;
-                    for entry in fs::read_dir(storage_dir)? {
-                        let entry = entry?;
-                        if !entry.file_type()?.is_dir() {
-                            continue;
-                        }
-                        
-                        let manifest_path = entry.path().join("manifest.json");
-                        if !manifest_path.exists() {
-                            continue;
-                        }
-                        
-                        let prev_manifest = Self::load_from(
-                            entry.file_name().to_string_lossy().as_ref()
-                        )?;
-                        
-                        if Some(&prev_manifest.backup_chain_hash.unwrap_or_default()) == manifest.previous_backup_hash.as_ref() {
-                            current_backup_name = prev_manifest.name.clone();
-                            found_previous = true;
-                            break;
-                        }
-                    }
-                    
-                    if !found_previous {
-                        return Err(anyhow!("Broken chain: previous backup not found"));
-                    }
-                }
-                None => break, // Reached the end of the chain
-            }
-        }
-        
-        Ok(true)
+    pub fn get_blob_chain_info(&self) -> Result<String, anyhow::Error> {
+        self.get_blob_chain_info_with_dir(None)
+    }
+
+    pub fn get_blob_chain_info_with_dir(&self, storage_dir_override: Option<PathBuf>) -> Result<String, anyhow::Error> {
+        let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
+        let chain_manager = BlobChainManager::new(storage_dir)?;
+        let metadata = chain_manager.get_chain_info();
+        Ok(format!(
+            "Blob chain contains {} blobs with integrity hash: {}",
+            metadata.chain_order.len(),
+            metadata.chain_integrity_hash
+        ))
     }
 
     pub fn list_all_backups_sorted() -> Result<Vec<String>, anyhow::Error> {

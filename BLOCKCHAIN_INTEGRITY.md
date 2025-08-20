@@ -1,23 +1,24 @@
-# Blockchain Integrity & Enhanced Compression
+# Blob-Based Blockchain Integrity & Enhanced Compression
 
-SaveMe Config agora inclui recursos avançados de integridade blockchain e compressão otimizada para garantir máxima segurança e eficiência de armazenamento.
+SaveMe Config now features a revolutionary **blob-based blockchain** system that ensures maximum security and data integrity at the individual file level, with AES-256-GCM encrypted metadata storage.
 
-## 🔒 Sistema de Integridade Blockchain
+## 🔒 Blob-Based Blockchain System
 
-### Verificação de Cadeia
-Cada backup agora mantém uma referência criptográfica ao backup anterior, criando uma cadeia de integridade inviolável:
+### Revolutionary Blob-Level Security
+Each individual blob (compressed file) is cryptographically linked in an immutable blockchain, ensuring that **any missing or corrupted blob immediately compromises the entire chain integrity**.
 
 ```
-Backup 1 → Hash da Cadeia 1
-Backup 2 → [Hash da Cadeia 1] + [Conteúdo] → Hash da Cadeia 2  
-Backup 3 → [Hash da Cadeia 2] + [Conteúdo] → Hash da Cadeia 3
+Blob1 [Genesis] → Hash Chain 1
+Blob2 [Previous: Hash Chain 1] → Hash Chain 2  
+Blob3 [Previous: Hash Chain 2] → Hash Chain 3
 ```
 
-### Recursos de Segurança
-- **Detecção de Violação**: Qualquer alteração nos dados quebra a cadeia
-- **Verificação Individual**: Verificação de integridade de backups únicos
-- **Verificação de Cadeia**: Validação completa desde qualquer ponto inicial
-- **Transparência Total**: Visualização do status de integridade na interface
+### Advanced Security Features
+- **Individual Blob Verification**: Each blob has its own cryptographic integrity check
+- **Chain Link Verification**: Every blob must correctly reference the previous blob's chain hash
+- **Missing Blob Detection**: Blockchain verification fails immediately if any blob is missing
+- **Tamper Detection**: Any modification to blob content or metadata breaks the chain
+- **Encrypted Metadata Storage**: All blockchain information stored with AES-256-GCM encryption
 
 ## 🗜️ Compressão Máxima & Deduplicação
 
@@ -33,83 +34,97 @@ Backup 3 → [Hash da Cadeia 2] + [Conteúdo] → Hash da Cadeia 3
 
 ## 🚀 Novos Comandos da API
 
-### Verificação de Integridade
+### Verificação de Integridade de Blob Chain
 ```typescript
-// Verificar integridade de um backup específico
+// Verificar integridade da cadeia de blobs
 invoke('verify_backup_integrity', { backupName: 'meu-backup' })
 
-// Verificar cadeia completa a partir de um backup
+// Verificar cadeia completa de blobs (nova implementação)
 invoke('verify_backup_chain', { startBackupName: 'meu-backup' })
 
-// Obter informações detalhadas da cadeia
+// Obter informações detalhadas da cadeia de blobs
 invoke('get_backup_chain_info', { backupName: 'meu-backup' })
 ```
 
-### Estrutura BackupChainInfo
+### Estrutura BackupChainInfo (Atualizada)
 ```typescript
 interface BackupChainInfo {
   name: string;
-  backup_hash: string;        // Hash do conteúdo do backup
-  chain_hash: string;         // Hash da cadeia blockchain
-  previous_backup_hash?: string; // Referência ao backup anterior
-  is_integrity_valid: boolean;   // Status de integridade
+  backup_hash: string;           // "N/A (using blob-based blockchain)"
+  chain_hash: string;            // Informações da cadeia de blobs
+  previous_backup_hash?: string; // null (não usado em blockchain de blobs)
+  is_integrity_valid: boolean;   // Status de integridade da cadeia de blobs
 }
 ```
 
 ## 🖥️ Interface do Usuário
 
 ### Aba de Restauração Atualizada
-- **Status de Integridade**: Indicador visual da validade do backup
-- **Botões de Verificação**: Verificação manual de integridade e cadeia
-- **Informações da Cadeia**: Visualização de hashes e referências
-- **Feedback em Tempo Real**: Notificações de sucesso/falha
+- **Status de Integridade**: Indicador visual da validade da cadeia de blobs
+- **Botões de Verificação**: Verificação manual de integridade da cadeia de blobs
+- **Informações da Cadeia**: Visualização de hashes e referências dos blobs
+- **Feedback em Tempo Real**: Notificações específicas sobre status de cada blob
 
 ### Criação de Backup
-- **Vinculação Automática**: Novos backups são automaticamente vinculados aos anteriores
-- **Deduplicação Transparente**: Redução automática de armazenamento
-- **Compressão Máxima**: Aplicada automaticamente a todos os novos backups
+- **Vinculação Automática de Blobs**: Novos blobs são automaticamente vinculados na cadeia
+- **Deduplicação Transparente**: Redução automática de armazenamento mantida
+- **Compressão Máxima**: Aplicada automaticamente a todos os novos blobs
+- **Blockchain Automática**: Cada blob é automaticamente adicionado à cadeia criptográfica
 
 ## 🔧 Implementação Técnica
 
-### Algoritmo de Hash da Cadeia
+### Algoritmo de Hash da Cadeia de Blobs
 ```rust
-fn calculate_chain_hash(previous_hash: Option<String>, current_hash: String) -> String {
+// Each blob is linked to the previous blob in the chain
+fn finalize_blob_chain_hash(&mut self) -> Result<(), anyhow::Error> {
     let mut hasher = Sha256::new();
-    if let Some(prev) = previous_hash {
-        hasher.update(prev.as_bytes());
+    
+    // Include previous blob hash if available
+    if let Some(prev_hash) = &self.previous_blob_hash {
+        hasher.update(prev_hash.as_bytes());
     }
-    hasher.update(current_hash.as_bytes());
-    hex::encode(hasher.finalize())
+    
+    // Include current blob content hash
+    let content_hash = self.calculate_blob_content_hash();
+    hasher.update(content_hash.as_bytes());
+    
+    self.blob_chain_hash = Some(hex::encode(hasher.finalize()));
+    Ok(())
 }
 ```
 
-### Processo de Deduplicação
-1. Calcula SHA256 do conteúdo comprimido
-2. Verifica se conteúdo idêntico existe em backups anteriores
-3. Se encontrado, reutiliza referência existente
-4. Se não encontrado, armazena novo blob
+### Processo de Verificação de Integridade
+1. **Verificação de Metadados**: Valida integridade do arquivo de metadados criptografado
+2. **Verificação Individual de Blobs**: Cada blob deve ter integridade interna válida
+3. **Verificação de Links da Cadeia**: Cada blob deve referenciar corretamente o anterior
+4. **Detecção de Blobs Ausentes**: Falha imediata se qualquer blob estiver faltando
+5. **Verificação de Hash da Cadeia**: Validação do hash calculado vs. armazenado
 
-### Verificação de Integridade
-1. Recalcula hash do conteúdo do backup
-2. Verifica se hash da cadeia corresponde ao armazenado
-3. Para verificação de cadeia, percorre todos os backups conectados
-4. Detecta referências circulares e cadeias quebradas
+### Armazenamento Criptografado
+- **Algoritmo**: AES-256-GCM com nonces aleatórios
+- **Arquivo**: `blob_chain.encrypted`
+- **Conteúdo**: Ordem dos blobs, posições, hashes de integridade
+- **Segurança**: Apenas a aplicação pode descriptografar e verificar
 
 ## ⚡ Benefícios
 
-### Segurança
-- **Imutabilidade**: Dados protegidos contra alteração não autorizada
-- **Rastreabilidade**: Histórico completo de modificações
+### Segurança Revolucionária
+- **Imutabilidade Granular**: Cada arquivo individual protegido contra alteração
+- **Rastreabilidade Completa**: Histórico completo de cada blob na cadeia
 - **Verificação Independente**: Validação sem necessidade de confiança
+- **Detecção Instantânea**: Falhas identificadas imediatamente ao acessar a cadeia
+- **Criptografia Militar**: AES-256-GCM para metadados da blockchain
 
-### Eficiência
-- **Armazenamento Otimizado**: Significativa redução de espaço
-- **Performance**: Compressão máxima sem comprometer velocidade
-- **Compatibilidade**: Ideal para versionamento em Git/GitHub
+### Eficiência Aprimorada
+- **Armazenamento Otimizado**: Significativa redução de espaço mantida
+- **Performance Superior**: Verificação rápida de integridade individual
+- **Compatibilidade Mantida**: Ainda ideal para versionamento em Git/GitHub
+- **Escalabilidade**: Sistema funciona com qualquer número de blobs
 
-### Usabilidade
-- **Interface Intuitiva**: Verificações com um clique
-- **Feedback Visual**: Status claro de integridade
-- **Operação Transparente**: Funciona automaticamente em segundo plano
+### Usabilidade Melhorada
+- **Interface Intuitiva**: Verificações de integridade com um clique
+- **Feedback Detalhado**: Status específico de cada blob e da cadeia
+- **Operação Transparente**: Blockchain funciona automaticamente
+- **Segurança Invisível**: Proteção máxima sem complexidade adicional
 
-Este sistema garante que os programas salvos nunca falhem devido à corrupção de dados, enquanto mantém os arquivos o mais comprimidos possível para facilitar o upload no GitHub.
+Este sistema garante que **nenhum arquivo possa ser perdido ou corrompido sem detecção imediata**, enquanto mantém todos os benefícios de compressão e compatibilidade existentes. A blockchain agora opera no nível de blob individual, proporcionando segurança granular sem precedentes.
