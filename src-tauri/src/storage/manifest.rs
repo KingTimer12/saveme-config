@@ -172,7 +172,7 @@ impl Manifest {
 
         // Initialize blob chain manager and add blob to chain
         let storage_dir = Self::base_storage_dir()?;
-        let mut chain_manager = BlobChainManager::new(storage_dir)?;
+        let mut chain_manager = BlobChainManager::new(storage_dir, self.name.clone())?;
         chain_manager.add_blob_to_chain(&id, &mut blob)?;
 
         println!("Added blob to blockchain");

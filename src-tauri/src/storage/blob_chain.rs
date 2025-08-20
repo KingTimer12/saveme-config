@@ -18,6 +18,8 @@ pub struct BlobChainMetadata {
     pub blob_positions: HashMap<String, u64>,
     /// Ordered list of blob IDs in the chain
     pub chain_order: Vec<String>,
+    /// Map of blob_id -> blob_chain_hash for efficient lookup
+    pub blob_chain_hashes: HashMap<String, String>,
     /// Hash of the entire chain for integrity verification
     pub chain_integrity_hash: String,
     /// Timestamp when the chain was last updated
@@ -29,15 +31,17 @@ impl BlobChainMetadata {
         Self {
             blob_positions: HashMap::new(),
             chain_order: Vec::new(),
+            blob_chain_hashes: HashMap::new(),
             chain_integrity_hash: String::new(),
             last_updated: chrono::Utc::now().to_rfc3339(),
         }
     }
 
-    pub fn add_blob(&mut self, blob_id: String) {
+    pub fn add_blob(&mut self, blob_id: String, blob_chain_hash: String) {
         let position = self.chain_order.len() as u64;
         self.blob_positions.insert(blob_id.clone(), position);
-        self.chain_order.push(blob_id);
+        self.chain_order.push(blob_id.clone());
+        self.blob_chain_hashes.insert(blob_id, blob_chain_hash);
         self.last_updated = chrono::Utc::now().to_rfc3339();
         self.update_integrity_hash();
     }
@@ -51,6 +55,16 @@ impl BlobChainMetadata {
         }
         
         self.chain_integrity_hash = hex::encode(hasher.finalize());
+    }
+
+    pub fn get_previous_blob_chain_hash(&self, position: u64) -> Option<String> {
+        if position == 0 {
+            return None;
+        }
+        
+        let prev_position = position - 1;
+        let prev_blob_id = &self.chain_order[prev_position as usize];
+        self.blob_chain_hashes.get(prev_blob_id).cloned()
     }
 
     pub fn verify_integrity(&self) -> bool {
@@ -68,12 +82,11 @@ impl BlobChainMetadata {
 /// Manager for blob blockchain operations
 pub struct BlobChainManager {
     storage_dir: PathBuf,
+    backup_name: String,
     metadata: BlobChainMetadata,
 }
 
 impl BlobChainManager {
-    const CHAIN_METADATA_FILE: &'static str = "blob_chain.encrypted";
-    
     fn get_encryption_key() -> [u8; 32] {
         // In a production environment, this key should be derived from:
         // 1. User password + salt
@@ -90,9 +103,10 @@ impl BlobChainManager {
         key
     }
 
-    pub fn new(storage_dir: PathBuf) -> Result<Self> {
+    pub fn new(storage_dir: PathBuf, backup_name: String) -> Result<Self> {
         let mut manager = Self {
             storage_dir,
+            backup_name,
             metadata: BlobChainMetadata::new(),
         };
         
@@ -102,7 +116,7 @@ impl BlobChainManager {
             manager.metadata = BlobChainMetadata::new();
         }
         
-        println!("Metadata loaded successfully");
+        println!("Metadata loaded successfully for backup: {}", manager.backup_name);
         println!("Metadata: {:?}", manager.metadata);
         
         Ok(manager)
@@ -111,21 +125,20 @@ impl BlobChainManager {
     pub fn add_blob_to_chain(&mut self, blob_id: &str, blob: &mut BlobPayload) -> Result<()> {
         let current_position = self.metadata.chain_order.len() as u64;
         
-        // Get the previous blob's chain hash if this isn't the first blob
-        let previous_blob_hash = if current_position > 0 {
-            let prev_blob_id = &self.metadata.chain_order[(current_position - 1) as usize];
-            // Create a deterministic hash based on the previous blob ID and position
-            Some(format!("chain_{}_{}", prev_blob_id, current_position - 1))
-        } else {
-            None
-        };
+        // Get the actual previous blob's chain hash if this isn't the first blob
+        let previous_blob_hash = self.metadata.get_previous_blob_chain_hash(current_position);
 
         // Set the previous blob hash and finalize the chain hash
         blob.set_previous_blob_hash(previous_blob_hash);
         blob.finalize_blob_chain_hash()?;
 
-        // Add to metadata
-        self.metadata.add_blob(blob_id.to_string());
+        // Get the finalized blob chain hash to store in metadata
+        let blob_chain_hash = blob.get_blob_chain_hash()
+            .ok_or_else(|| anyhow!("Blob chain hash not finalized"))?
+            .clone();
+
+        // Add to metadata with the actual blob chain hash
+        self.metadata.add_blob(blob_id.to_string(), blob_chain_hash);
         
         // Save the updated metadata
         self.save_metadata()?;
@@ -155,7 +168,7 @@ impl BlobChainManager {
             let blob = blobs.get(blob_id)
                 .ok_or_else(|| anyhow!("Missing blob in chain: {}", blob_id))?;
             
-            println!("Blob: {:?}", blob);
+            println!("Verifying blob: {}", blob_id);
 
             // Verify blob internal integrity
             if !blob.verify_blob_integrity() {
@@ -163,12 +176,8 @@ impl BlobChainManager {
                 return Ok(false);
             }
 
-            // Calculate what the chain hash should be for this position
-            let expected_prev_hash = if i > 0 {
-                Some(format!("chain_{}_{}", &self.metadata.chain_order[i - 1], i - 1))
-            } else {
-                None
-            };
+            // Get what the previous hash should be for this position
+            let expected_prev_hash = self.metadata.get_previous_blob_chain_hash(i as u64);
 
             // Check that the blob has the expected previous hash
             match (blob.get_previous_blob_hash(), &expected_prev_hash) {
@@ -194,7 +203,7 @@ impl BlobChainManager {
 
             // Calculate and store what this blob's chain hash should be
             let mut expected_blob = BlobPayload::new(blob.get_format().to_string(), &blob.decode().unwrap_or_default());
-            expected_blob.set_previous_blob_hash(expected_prev_hash);
+            expected_blob.set_previous_blob_hash(expected_prev_hash.clone());
             expected_blob.finalize_blob_chain_hash()?;
             expected_chain_hashes.push(expected_blob.get_blob_chain_hash().cloned().unwrap());
 
@@ -202,6 +211,18 @@ impl BlobChainManager {
             if blob.get_blob_chain_hash() != Some(&expected_chain_hashes[i]) {
                 println!("Chain hash mismatch for blob {}: expected {}, got {:?}", 
                          blob_id, expected_chain_hashes[i], blob.get_blob_chain_hash());
+                return Ok(false);
+            }
+
+            // Also verify that the stored metadata has the correct chain hash
+            if let Some(stored_hash) = self.metadata.blob_chain_hashes.get(blob_id) {
+                if stored_hash != &expected_chain_hashes[i] {
+                    println!("Metadata chain hash mismatch for blob {}: expected {}, stored {}", 
+                             blob_id, expected_chain_hashes[i], stored_hash);
+                    return Ok(false);
+                }
+            } else {
+                println!("Missing chain hash in metadata for blob: {}", blob_id);
                 return Ok(false);
             }
         }
@@ -215,7 +236,8 @@ impl BlobChainManager {
     }
 
     fn get_metadata_path(&self) -> PathBuf {
-        self.storage_dir.join(Self::CHAIN_METADATA_FILE)
+        let filename = format!("{}_blob_chain.encrypted", self.backup_name);
+        self.storage_dir.join(filename)
     }
 
     fn encrypt_data(&self, data: &[u8]) -> Result<Vec<u8>> {
@@ -303,7 +325,7 @@ mod tests {
     #[test]
     fn test_blob_chain_manager() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf(), "test_backup".to_string())?;
         
         let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
         let mut blob2 = BlobPayload::new("tar.zst".to_string(), b"test data 2");
@@ -315,9 +337,9 @@ mod tests {
         assert!(blob1.verify_blob_integrity());
         assert!(blob2.verify_blob_integrity());
         
-        // Verify that blob2 has a reference to blob1
+        // Verify that blob2 has a reference to blob1's actual chain hash
         assert!(blob2.get_previous_blob_hash().is_some());
-        assert!(blob2.get_previous_blob_hash().unwrap().contains("blob1"));
+        assert_eq!(blob2.get_previous_blob_hash(), blob1.get_blob_chain_hash());
         
         Ok(())
     }
@@ -325,7 +347,7 @@ mod tests {
     #[test]
     fn test_encrypted_metadata_storage() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf(), "test_backup".to_string())?;
         
         // Add some blobs
         let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
@@ -334,12 +356,12 @@ mod tests {
         manager.add_blob_to_chain("blob1", &mut blob1)?;
         manager.add_blob_to_chain("blob2", &mut blob2)?;
         
-        // Verify the encrypted file was created
-        let metadata_file = temp_dir.path().join("blob_chain.encrypted");
+        // Verify the encrypted file was created with backup-specific name
+        let metadata_file = temp_dir.path().join("test_backup_blob_chain.encrypted");
         assert!(metadata_file.exists());
         
         // Create a new manager and verify it can load the encrypted data
-        let manager2 = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        let manager2 = BlobChainManager::new(temp_dir.path().to_path_buf(), "test_backup".to_string())?;
         assert_eq!(manager2.metadata.chain_order.len(), 2);
         assert_eq!(manager2.metadata.chain_order[0], "blob1");
         assert_eq!(manager2.metadata.chain_order[1], "blob2");
@@ -353,7 +375,7 @@ mod tests {
     #[test]
     fn test_complete_blob_chain_verification() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf())?;
+        let mut manager = BlobChainManager::new(temp_dir.path().to_path_buf(), "test_backup".to_string())?;
         
         // Create a chain of 3 blobs
         let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
