@@ -172,7 +172,7 @@ impl Manifest {
 
         // Initialize blob chain manager and add blob to chain
         let storage_dir = Self::base_storage_dir()?;
-        let mut chain_manager = BlobChainManager::new(storage_dir)?;
+        let mut chain_manager = BlobChainManager::new(storage_dir, self.name.clone())?;
         chain_manager.add_blob_to_chain(&id, &mut blob)?;
 
         println!("Added blob to blockchain");
@@ -301,7 +301,7 @@ impl Manifest {
         storage_dir_override: Option<PathBuf>,
     ) -> Result<bool, anyhow::Error> {
         let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
-        let chain_manager = BlobChainManager::new(storage_dir)?;
+        let chain_manager = BlobChainManager::new(storage_dir, self.name.clone())?;
         chain_manager.verify_blob_chain(&self.blobs)
     }
 
@@ -314,7 +314,7 @@ impl Manifest {
         storage_dir_override: Option<PathBuf>,
     ) -> Result<String, anyhow::Error> {
         let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
-        let chain_manager = BlobChainManager::new(storage_dir)?;
+        let chain_manager = BlobChainManager::new(storage_dir, self.name.clone())?;
         let metadata = chain_manager.get_chain_info();
         Ok(format!(
             "Blob chain contains {} blobs with integrity hash: {}",
