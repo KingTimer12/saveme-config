@@ -58,9 +58,11 @@ fn save_config(name: &str, app_ids: Vec<String>) -> Result<String, String> {
                         if path.exists() {
                             println!("Config file exists");
                             println!("Creating blob from file");
-                            manifest
-                                .create_blob_from_file(&path, app.target_hint())
-                                .map_err(|e| e.to_string())?;
+                            if !path.is_dir() {
+                                manifest
+                                    .create_blob_from_file(&path, app.target_hint())
+                                    .map_err(|e| e.to_string())?;
+                            }
                             println!("Blob created successfully");
                         }
                     }

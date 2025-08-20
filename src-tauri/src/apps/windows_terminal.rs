@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use anyhow::{Result, anyhow};
 use super::App;
+use anyhow::{anyhow, Result};
+use std::path::PathBuf;
 
 pub struct WindowsTerminal;
 
@@ -12,7 +12,7 @@ impl App for WindowsTerminal {
     fn name(&self) -> &'static str {
         "Windows Terminal"
     }
-    
+
     fn snap_support(&self) -> bool {
         false
     }
@@ -20,7 +20,19 @@ impl App for WindowsTerminal {
     fn is_installed(&self) -> bool {
         self.app_path().map(|p| p.exists()).unwrap_or(false)
     }
-    
+
+    fn target_hint(&self) -> &'static str {
+        "sys:windows-terminal"
+    }
+
+    fn package_id(&self) -> Option<&'static str> {
+        if cfg!(target_os = "windows") {
+            Some("Microsoft.WindowsTerminal")
+        } else {
+            None
+        }
+    }
+
     fn app_path(&self) -> Result<PathBuf> {
         if !cfg!(target_os = "windows") {
             return Err(anyhow!("Windows Terminal is only available on Windows."));
@@ -56,17 +68,5 @@ impl App for WindowsTerminal {
         }
 
         Ok(paths)
-    }
-
-    fn target_hint(&self) -> &'static str {
-        "sys:windows-terminal"
-    }
-
-    fn package_id(&self) -> Option<&'static str> {
-        if cfg!(target_os = "windows") {
-            Some("Microsoft.WindowsTerminal")
-        } else {
-            None
-        }
     }
 }
