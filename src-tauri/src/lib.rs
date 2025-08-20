@@ -17,6 +17,15 @@ struct BackupInfo {
     created_at: String,
 }
 
+#[derive(Serialize, Clone)]
+struct BackupChainInfo {
+    name: String,
+    backup_hash: String,
+    chain_hash: String,
+    previous_backup_hash: Option<String>,
+    is_integrity_valid: bool,
+}
+
 #[tauri::command]
 fn list_applications() -> Vec<AppInfo> {
     apps::get_all_apps_info()
@@ -48,6 +57,17 @@ fn save_config(name: &str, app_ids: Vec<String>) -> Result<String, String> {
                     }
                 }
             }
+        }
+    }
+
+    // Configurar cadeia blockchain (referenciar backup anterior se existir)
+    let existing_backups = Manifest::list_all_backups_sorted().map_err(|e| e.to_string())?;
+    if !existing_backups.is_empty() {
+        let last_backup = existing_backups.last().unwrap();
+        if last_backup != name {
+            // Só referenciar se não for o mesmo backup sendo atualizado
+            manifest.set_previous_backup(last_backup).map_err(|e| e.to_string())?;
+            println!("Linked to previous backup: {}", last_backup);
         }
     }
 
@@ -125,6 +145,45 @@ fn restore_config(backup_name: &str, app_ids: Vec<String>) -> Result<String, Str
     Ok("Config restored successfully".to_string())
 }
 
+#[tauri::command]
+fn verify_backup_integrity(backup_name: &str) -> Result<String, String> {
+    let manifest = Manifest::load_from(backup_name).map_err(|e| e.to_string())?;
+    
+    let is_valid = manifest.verify_backup_integrity().map_err(|e| e.to_string())?;
+    
+    if is_valid {
+        Ok(format!("Backup '{}' integrity verified successfully", backup_name))
+    } else {
+        Err(format!("Backup '{}' failed integrity verification", backup_name))
+    }
+}
+
+#[tauri::command]
+fn verify_backup_chain(start_backup_name: &str) -> Result<String, String> {
+    let manifest = Manifest::load_from(start_backup_name).map_err(|e| e.to_string())?;
+    
+    let is_valid = manifest.verify_chain_from(start_backup_name).map_err(|e| e.to_string())?;
+    
+    if is_valid {
+        Ok(format!("Backup chain starting from '{}' verified successfully", start_backup_name))
+    } else {
+        Err(format!("Backup chain starting from '{}' failed verification", start_backup_name))
+    }
+}
+
+#[tauri::command]
+fn get_backup_chain_info(backup_name: &str) -> Result<BackupChainInfo, String> {
+    let manifest = Manifest::load_from(backup_name).map_err(|e| e.to_string())?;
+    
+    Ok(BackupChainInfo {
+        name: manifest.name.clone(),
+        backup_hash: manifest.calculate_backup_hash().map_err(|e| e.to_string())?,
+        chain_hash: manifest.backup_chain_hash.clone().unwrap_or_default(),
+        previous_backup_hash: manifest.previous_backup_hash.clone(),
+        is_integrity_valid: manifest.verify_backup_integrity().map_err(|e| e.to_string())?,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -141,7 +200,10 @@ pub fn run() {
             list_applications,
             save_config,
             list_backups,
-            restore_config
+            restore_config,
+            verify_backup_integrity,
+            verify_backup_chain,
+            get_backup_chain_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,7 +2,7 @@ use base64::{engine::general_purpose, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BlobPayload {
     format: String,
     sha256: String,
@@ -30,5 +30,13 @@ impl BlobPayload {
 
     pub fn get_format(&self) -> &str {
         &self.format
+    }
+
+    pub fn get_sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn get_size(&self) -> u64 {
+        self.size
     }
 }

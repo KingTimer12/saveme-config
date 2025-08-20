@@ -13,13 +13,16 @@ use zstd::encode_all;
 
 use crate::storage::{blobs::BlobPayload, entry::Entry};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
     pub name: String,
     pub created_at: String,
     pub os_source: String,
     pub entries: Vec<Entry>,
     blobs: HashMap<String, BlobPayload>,
+    // Blockchain integrity fields
+    pub previous_backup_hash: Option<String>,
+    pub backup_chain_hash: Option<String>,
 }
 
 impl Manifest {
@@ -30,6 +33,8 @@ impl Manifest {
             os_source,
             entries: Vec::new(),
             blobs: HashMap::new(),
+            previous_backup_hash: None,
+            backup_chain_hash: None,
         }
     }
 
@@ -52,11 +57,53 @@ impl Manifest {
     }
     
     pub fn save(&mut self) -> Result<(), anyhow::Error> {
+        // Finalizar hash da cadeia blockchain antes de salvar
+        self.finalize_chain_hash()?;
+        
         let backup_dir = self.backup_dir()?;
         fs::create_dir_all(&backup_dir)?;
         let manifest_path = backup_dir.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_string_pretty(self)?)?;
         Ok(())
+    }
+
+    pub fn find_existing_blob_by_content(&self, content_hash: &str) -> Option<String> {
+        // Check if any existing blob has the same content hash
+        for (blob_id, blob) in &self.blobs {
+            if blob.get_sha256() == content_hash {
+                return Some(blob_id.clone());
+            }
+        }
+        None
+    }
+
+    pub fn find_existing_blob_across_backups(content_hash: &str) -> Result<Option<(String, String)>, anyhow::Error> {
+        // Check across all existing backups for duplicate content
+        let storage_dir = Self::base_storage_dir()?;
+        if !storage_dir.exists() {
+            return Ok(None);
+        }
+
+        for entry in fs::read_dir(storage_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            
+            let manifest_path = entry.path().join("manifest.json");
+            if !manifest_path.exists() {
+                continue;
+            }
+            
+            let backup_name = entry.file_name().to_string_lossy().into_owned();
+            let manifest = Self::load_from(&backup_name)?;
+            
+            if let Some(blob_id) = manifest.find_existing_blob_by_content(content_hash) {
+                return Ok(Some((backup_name, blob_id)));
+            }
+        }
+        
+        Ok(None)
     }
 
     pub fn create_blob_from_file(
@@ -80,15 +127,36 @@ impl Manifest {
         }
         println!("Created TAR archive");
 
-        // Comprime com zstd
-        println!("Compressing TAR archive");
-        let compressed = encode_all(&tar_data[..], 3)?;
+        // Comprime com zstd (nivel máximo para melhor compressão)
+        println!("Compressing TAR archive with maximum compression");
+        let compressed = encode_all(&tar_data[..], 19)?;
 
-        // SHA256
-        println!("Calculating SHA256 hash");
+        // SHA256 do conteúdo comprimido para verificar duplicação
+        println!("Calculating SHA256 hash for deduplication");
         let mut hasher = Sha256::new();
         hasher.update(&compressed);
-        let id = hex::encode(hasher.finalize());
+        let content_hash = hex::encode(hasher.finalize());
+
+        // Verificar se o blob já existe (deduplicação)
+        println!("Checking for existing blob with same content");
+        if let Some((existing_backup, existing_blob_id)) = Self::find_existing_blob_across_backups(&content_hash)? {
+            println!("Found duplicate content in backup '{}' with blob ID '{}'", existing_backup, existing_blob_id);
+            
+            // Usar referência do blob existente ao invés de criar novo
+            self.entries.push({
+                Entry {
+                    blob_id: existing_blob_id,
+                    target_hint: target_hint.to_string(),
+                    logical_path: src.to_string_lossy().into_owned(),
+                    tar_member: Some(src.file_name().unwrap().to_string_lossy().into_owned())
+                }
+            });
+            
+            println!("Reused existing blob - storage space saved!");
+            return Ok(());
+        }
+
+        let id = content_hash; // Use content hash as ID for better deduplication
 
         // Salva no disco
         let blob_path = blob_dir.join(format!("{id}.tar.zst"));
@@ -97,6 +165,9 @@ impl Manifest {
         }
         
         println!("Blob saved to disk");
+
+        // Adicionar blob ao manifest atual
+        self.blobs.insert(id.clone(), BlobPayload::new("tar.zst".to_string(), &compressed));
 
         self.entries.push({
             Entry {
@@ -198,5 +269,178 @@ impl Manifest {
         }
 
         Ok(())
+    }
+
+    // Blockchain integrity methods
+    pub fn calculate_backup_hash(&self) -> Result<String, anyhow::Error> {
+        // Create a canonical representation of the backup for hashing
+        let mut hasher = Sha256::new();
+        
+        // Hash the manifest metadata (excluding chain fields to avoid circular dependency)
+        hasher.update(self.name.as_bytes());
+        hasher.update(self.created_at.as_bytes());
+        hasher.update(self.os_source.as_bytes());
+        
+        // Hash entries in a deterministic order
+        let mut sorted_entries = self.entries.clone();
+        sorted_entries.sort_by(|a, b| a.blob_id.cmp(&b.blob_id));
+        for entry in &sorted_entries {
+            hasher.update(entry.blob_id.as_bytes());
+            hasher.update(entry.target_hint.as_bytes());
+            hasher.update(entry.logical_path.as_bytes());
+            if let Some(tar_member) = &entry.tar_member {
+                hasher.update(tar_member.as_bytes());
+            }
+        }
+        
+        // Hash blobs in a deterministic order
+        let mut sorted_blob_ids: Vec<_> = self.blobs.keys().collect();
+        sorted_blob_ids.sort();
+        for blob_id in sorted_blob_ids {
+            let blob = &self.blobs[blob_id];
+            hasher.update(blob_id.as_bytes());
+            hasher.update(blob.get_format().as_bytes());
+            hasher.update(blob.get_sha256().as_bytes());
+            hasher.update(&blob.get_size().to_le_bytes());
+        }
+        
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    pub fn set_previous_backup(&mut self, previous_backup_name: &str) -> Result<(), anyhow::Error> {
+        // Load the previous backup and get its chain hash
+        let previous_manifest = Self::load_from(previous_backup_name)?;
+        let previous_hash = previous_manifest.backup_chain_hash
+            .ok_or_else(|| anyhow!("Previous backup has no chain hash"))?;
+        
+        self.previous_backup_hash = Some(previous_hash);
+        Ok(())
+    }
+
+    pub fn finalize_chain_hash(&mut self) -> Result<(), anyhow::Error> {
+        let mut hasher = Sha256::new();
+        
+        // Include previous backup hash if available
+        if let Some(prev_hash) = &self.previous_backup_hash {
+            hasher.update(prev_hash.as_bytes());
+        }
+        
+        // Include current backup hash
+        let current_hash = self.calculate_backup_hash()?;
+        hasher.update(current_hash.as_bytes());
+        
+        self.backup_chain_hash = Some(hex::encode(hasher.finalize()));
+        Ok(())
+    }
+
+    pub fn verify_backup_integrity(&self) -> Result<bool, anyhow::Error> {
+        // Recalculate the backup hash and compare with stored chain hash
+        let calculated_hash = self.calculate_backup_hash()?;
+        
+        // Verify chain hash
+        let mut hasher = Sha256::new();
+        if let Some(prev_hash) = &self.previous_backup_hash {
+            hasher.update(prev_hash.as_bytes());
+        }
+        hasher.update(calculated_hash.as_bytes());
+        let expected_chain_hash = hex::encode(hasher.finalize());
+        
+        match &self.backup_chain_hash {
+            Some(stored_hash) => Ok(*stored_hash == expected_chain_hash),
+            None => Ok(false), // No chain hash means not properly initialized
+        }
+    }
+
+    pub fn verify_chain_from(&self, start_backup_name: &str) -> Result<bool, anyhow::Error> {
+        let mut current_backup_name = start_backup_name.to_string();
+        let mut visited = std::collections::HashSet::new();
+        
+        loop {
+            // Prevent infinite loops
+            if !visited.insert(current_backup_name.clone()) {
+                return Err(anyhow!("Circular reference detected in backup chain"));
+            }
+            
+            // Load current backup
+            let manifest = if current_backup_name == self.name {
+                self.clone() // Use current instance if it's the same backup
+            } else {
+                Self::load_from(&current_backup_name)?
+            };
+            
+            // Verify this backup's integrity
+            if !manifest.verify_backup_integrity()? {
+                return Ok(false);
+            }
+            
+            // Move to next backup in chain
+            match &manifest.previous_backup_hash {
+                Some(_) => {
+                    // Find the backup that has the matching chain hash
+                    let storage_dir = Self::base_storage_dir()?;
+                    if !storage_dir.exists() {
+                        return Ok(true); // No more backups to verify
+                    }
+                    
+                    let mut found_previous = false;
+                    for entry in fs::read_dir(storage_dir)? {
+                        let entry = entry?;
+                        if !entry.file_type()?.is_dir() {
+                            continue;
+                        }
+                        
+                        let manifest_path = entry.path().join("manifest.json");
+                        if !manifest_path.exists() {
+                            continue;
+                        }
+                        
+                        let prev_manifest = Self::load_from(
+                            entry.file_name().to_string_lossy().as_ref()
+                        )?;
+                        
+                        if Some(&prev_manifest.backup_chain_hash.unwrap_or_default()) == manifest.previous_backup_hash.as_ref() {
+                            current_backup_name = prev_manifest.name.clone();
+                            found_previous = true;
+                            break;
+                        }
+                    }
+                    
+                    if !found_previous {
+                        return Err(anyhow!("Broken chain: previous backup not found"));
+                    }
+                }
+                None => break, // Reached the end of the chain
+            }
+        }
+        
+        Ok(true)
+    }
+
+    pub fn list_all_backups_sorted() -> Result<Vec<String>, anyhow::Error> {
+        let storage_dir = Self::base_storage_dir()?;
+        let mut backups = Vec::new();
+        
+        if !storage_dir.exists() {
+            return Ok(backups);
+        }
+        
+        for entry in fs::read_dir(storage_dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let manifest_path = entry.path().join("manifest.json");
+                if manifest_path.exists() {
+                    backups.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        
+        // Sort by creation time
+        backups.sort_by(|a, b| {
+            let manifest_a = Self::load_from(a).unwrap_or_else(|_| Self::new(a.clone(), "".to_string(), "".to_string()));
+            let manifest_b = Self::load_from(b).unwrap_or_else(|_| Self::new(b.clone(), "".to_string(), "".to_string()));
+            manifest_a.created_at.cmp(&manifest_b.created_at)
+        });
+        
+        Ok(backups)
     }
 }
