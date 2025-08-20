@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod integration_tests {
-    use super::*;
     use tempfile::{TempDir, NamedTempFile};
     use std::io::Write;
     use crate::storage::{manifest::Manifest, blob_chain::BlobChainManager};

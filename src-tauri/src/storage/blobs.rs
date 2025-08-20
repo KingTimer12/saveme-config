@@ -42,10 +42,6 @@ impl BlobPayload {
         &self.sha256
     }
 
-    pub fn get_size(&self) -> u64 {
-        self.size
-    }
-
     // Blockchain methods for blob chaining
     pub fn get_previous_blob_hash(&self) -> Option<&String> {
         self.previous_blob_hash.as_ref()

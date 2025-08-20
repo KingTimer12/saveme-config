@@ -11,7 +11,7 @@ use tar::Builder;
 use walkdir::WalkDir;
 use zstd::encode_all;
 
-use crate::storage::{blobs::BlobPayload, entry::Entry, blob_chain::BlobChainManager};
+use crate::storage::{blob_chain::BlobChainManager, blobs::BlobPayload, entry::Entry};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
@@ -50,7 +50,7 @@ impl Manifest {
     fn backup_dir(&self) -> Result<PathBuf, anyhow::Error> {
         Ok(Self::base_storage_dir()?.join(&self.name))
     }
-    
+
     pub fn save(&mut self) -> Result<(), anyhow::Error> {
         let backup_dir = self.backup_dir()?;
         fs::create_dir_all(&backup_dir)?;
@@ -69,7 +69,9 @@ impl Manifest {
         None
     }
 
-    pub fn find_existing_blob_across_backups(content_hash: &str) -> Result<Option<(String, String)>, anyhow::Error> {
+    pub fn find_existing_blob_across_backups(
+        content_hash: &str,
+    ) -> Result<Option<(String, String)>, anyhow::Error> {
         // Check across all existing backups for duplicate content
         let storage_dir = Self::base_storage_dir()?;
         if !storage_dir.exists() {
@@ -81,20 +83,20 @@ impl Manifest {
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            
+
             let manifest_path = entry.path().join("manifest.json");
             if !manifest_path.exists() {
                 continue;
             }
-            
+
             let backup_name = entry.file_name().to_string_lossy().into_owned();
             let manifest = Self::load_from(&backup_name)?;
-            
+
             if let Some(blob_id) = manifest.find_existing_blob_by_content(content_hash) {
                 return Ok(Some((backup_name, blob_id)));
             }
         }
-        
+
         Ok(None)
     }
 
@@ -113,7 +115,9 @@ impl Manifest {
         let mut tar_data = Vec::new();
         {
             let mut builder = Builder::new(&mut tar_data);
-            let file_name = src.file_name().ok_or_else(|| anyhow!("Invalid file name"))?;
+            let file_name = src
+                .file_name()
+                .ok_or_else(|| anyhow!("Invalid file name"))?;
             builder.append_path_with_name(src, file_name)?;
             builder.finish()?;
         }
@@ -131,19 +135,24 @@ impl Manifest {
 
         // Verificar se o blob já existe (deduplicação)
         println!("Checking for existing blob with same content");
-        if let Some((existing_backup, existing_blob_id)) = Self::find_existing_blob_across_backups(&content_hash)? {
-            println!("Found duplicate content in backup '{}' with blob ID '{}'", existing_backup, existing_blob_id);
-            
+        if let Some((existing_backup, existing_blob_id)) =
+            Self::find_existing_blob_across_backups(&content_hash)?
+        {
+            println!(
+                "Found duplicate content in backup '{}' with blob ID '{}'",
+                existing_backup, existing_blob_id
+            );
+
             // Usar referência do blob existente ao invés de criar novo
             self.entries.push({
                 Entry {
                     blob_id: existing_blob_id,
                     target_hint: target_hint.to_string(),
                     logical_path: src.to_string_lossy().into_owned(),
-                    tar_member: Some(src.file_name().unwrap().to_string_lossy().into_owned())
+                    tar_member: Some(src.file_name().unwrap().to_string_lossy().into_owned()),
                 }
             });
-            
+
             println!("Reused existing blob - storage space saved!");
             return Ok(());
         }
@@ -155,17 +164,17 @@ impl Manifest {
         if !blob_path.exists() {
             fs::write(&blob_path, &compressed)?;
         }
-        
+
         println!("Blob saved to disk");
 
         // Create blob and add to chain
         let mut blob = BlobPayload::new("tar.zst".to_string(), &compressed);
-        
+
         // Initialize blob chain manager and add blob to chain
         let storage_dir = Self::base_storage_dir()?;
         let mut chain_manager = BlobChainManager::new(storage_dir)?;
         chain_manager.add_blob_to_chain(&id, &mut blob)?;
-        
+
         println!("Added blob to blockchain");
 
         // Adicionar blob ao manifest atual
@@ -176,7 +185,7 @@ impl Manifest {
                 blob_id: id,
                 target_hint: target_hint.to_string(),
                 logical_path: src.to_string_lossy().into_owned(),
-                tar_member: Some(src.file_name().unwrap().to_string_lossy().into_owned())
+                tar_member: Some(src.file_name().unwrap().to_string_lossy().into_owned()),
             }
         });
 
@@ -287,7 +296,10 @@ impl Manifest {
         self.verify_blob_chain_integrity_with_dir(None)
     }
 
-    pub fn verify_blob_chain_integrity_with_dir(&self, storage_dir_override: Option<PathBuf>) -> Result<bool, anyhow::Error> {
+    pub fn verify_blob_chain_integrity_with_dir(
+        &self,
+        storage_dir_override: Option<PathBuf>,
+    ) -> Result<bool, anyhow::Error> {
         let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
         let chain_manager = BlobChainManager::new(storage_dir)?;
         chain_manager.verify_blob_chain(&self.blobs)
@@ -297,7 +309,10 @@ impl Manifest {
         self.get_blob_chain_info_with_dir(None)
     }
 
-    pub fn get_blob_chain_info_with_dir(&self, storage_dir_override: Option<PathBuf>) -> Result<String, anyhow::Error> {
+    pub fn get_blob_chain_info_with_dir(
+        &self,
+        storage_dir_override: Option<PathBuf>,
+    ) -> Result<String, anyhow::Error> {
         let storage_dir = storage_dir_override.unwrap_or_else(|| Self::base_storage_dir().unwrap());
         let chain_manager = BlobChainManager::new(storage_dir)?;
         let metadata = chain_manager.get_chain_info();
@@ -311,11 +326,11 @@ impl Manifest {
     pub fn list_all_backups_sorted() -> Result<Vec<String>, anyhow::Error> {
         let storage_dir = Self::base_storage_dir()?;
         let mut backups = Vec::new();
-        
+
         if !storage_dir.exists() {
             return Ok(backups);
         }
-        
+
         for entry in fs::read_dir(storage_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
@@ -325,14 +340,16 @@ impl Manifest {
                 }
             }
         }
-        
+
         // Sort by creation time
         backups.sort_by(|a, b| {
-            let manifest_a = Self::load_from(a).unwrap_or_else(|_| Self::new(a.clone(), "".to_string(), "".to_string()));
-            let manifest_b = Self::load_from(b).unwrap_or_else(|_| Self::new(b.clone(), "".to_string(), "".to_string()));
+            let manifest_a = Self::load_from(a)
+                .unwrap_or_else(|_| Self::new(a.clone(), "".to_string(), "".to_string()));
+            let manifest_b = Self::load_from(b)
+                .unwrap_or_else(|_| Self::new(b.clone(), "".to_string(), "".to_string()));
             manifest_a.created_at.cmp(&manifest_b.created_at)
         });
-        
+
         Ok(backups)
     }
 }

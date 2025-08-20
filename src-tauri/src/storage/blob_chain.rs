@@ -41,15 +41,7 @@ impl BlobChainMetadata {
         self.last_updated = chrono::Utc::now().to_rfc3339();
         self.update_integrity_hash();
     }
-
-    pub fn get_previous_blob_id(&self, current_position: u64) -> Option<&String> {
-        if current_position == 0 {
-            None
-        } else {
-            self.chain_order.get((current_position - 1) as usize)
-        }
-    }
-
+    
     pub fn update_integrity_hash(&mut self) {
         let mut hasher = Sha256::new();
         
@@ -110,6 +102,9 @@ impl BlobChainManager {
             manager.metadata = BlobChainMetadata::new();
         }
         
+        println!("Metadata loaded successfully");
+        println!("Metadata: {:?}", manager.metadata);
+        
         Ok(manager)
     }
 
@@ -159,6 +154,8 @@ impl BlobChainManager {
         for (i, blob_id) in self.metadata.chain_order.iter().enumerate() {
             let blob = blobs.get(blob_id)
                 .ok_or_else(|| anyhow!("Missing blob in chain: {}", blob_id))?;
+            
+            println!("Blob: {:?}", blob);
 
             // Verify blob internal integrity
             if !blob.verify_blob_integrity() {
