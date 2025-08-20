@@ -5,8 +5,8 @@ use serde::Serialize;
 use tauri_plugin_os::platform;
 
 mod apps;
-mod storage;
 mod installer;
+mod storage;
 
 use apps::AppInfo;
 use storage::manifest::Manifest;
@@ -34,15 +34,17 @@ fn save_config(name: &str, app_ids: Vec<String>) -> Result<String, String> {
         if let Some(app) = apps::get_app(&app_id) {
             if app.is_installed() {
                 println!("Processing app: {}", app.name());
-                if let Ok(path) = app.config_path() {
-                    println!("Processing config file: {}", path.display());
-                    if path.exists() {
-                        println!("Config file exists");
-                        println!("Creating blob from file");
-                        manifest
-                            .create_blob_from_file(&path, app.target_hint())
-                            .map_err(|e| e.to_string())?;
-                        println!("Blob created successfully");
+                if let Ok(paths) = app.config_path() {
+                    for path in paths {
+                        println!("Processing config file: {}", path.display());
+                        if path.exists() {
+                            println!("Config file exists");
+                            println!("Creating blob from file");
+                            manifest
+                                .create_blob_from_file(&path, app.target_hint())
+                                .map_err(|e| e.to_string())?;
+                            println!("Blob created successfully");
+                        }
                     }
                 }
             }
@@ -69,7 +71,8 @@ fn list_backups() -> Result<Vec<BackupInfo>, String> {
             let manifest_path = entry.path().join("manifest.json");
             if manifest_path.exists() {
                 let content = std::fs::read_to_string(manifest_path).map_err(|e| e.to_string())?;
-                let manifest: Manifest = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+                let manifest: Manifest =
+                    serde_json::from_str(&content).map_err(|e| e.to_string())?;
                 backups.push(BackupInfo {
                     name: manifest.name,
                     created_at: manifest.created_at,
@@ -99,13 +102,21 @@ fn restore_config(backup_name: &str, app_ids: Vec<String>) -> Result<String, Str
             }
 
             // Proceed with restoring the configuration.
-            if let Some(entry) = manifest.entries.iter().find(|e| e.target_hint == app.target_hint()) {
-                if let Ok(dest_path) = app.config_path() {
+            if let Some(entry) = manifest
+                .entries
+                .iter()
+                .find(|e| e.target_hint == app.target_hint())
+            {
+                if let Ok(dest_paths) = app.config_path() {
                     // Ensure parent directory exists
-                    if let Some(parent) = dest_path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    for dest_path in dest_paths {
+                        if let Some(parent) = dest_path.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                        }
+                        manifest
+                            .restore_blob_to(entry, &dest_path)
+                            .map_err(|e| e.to_string())?;
                     }
-                    manifest.restore_blob_to(entry, &dest_path).map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -113,7 +124,6 @@ fn restore_config(backup_name: &str, app_ids: Vec<String>) -> Result<String, Str
 
     Ok("Config restored successfully".to_string())
 }
-
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
