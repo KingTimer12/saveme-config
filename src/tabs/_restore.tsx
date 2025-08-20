@@ -75,24 +75,6 @@ const RestoreTab = () => {
     setIsVerifying(false);
   };
 
-  const handleRestoreBackup = async () => {
-    const toastId = toast.loading("Restoring backup...");
-
-    try {
-      const result = await invoke<string>("restore_config", {
-        backupName: selectedBackup,
-        appIds: apps.map((app) => app.id),
-      });
-      toast.success(result, {
-        id: toastId,
-        description: "Backup restored successfully!",
-      });
-    } catch (e) {
-      toast.error("Failed to restore backup.", { id: toastId });
-      console.error(e);
-    }
-  };
-
   return (
     <Card>
       <CardHeader>
