@@ -33,11 +33,20 @@ fn list_applications() -> Vec<AppInfo> {
 
 #[tauri::command]
 fn save_config(name: &str, app_ids: Vec<String>) -> Result<String, String> {
-    let mut manifest = Manifest::new(
-        name.to_string(),
-        Utc::now().to_rfc3339(),
-        platform().to_string(),
-    );
+    let mut manifest = match Manifest::load_from(name) {
+        Ok(existing_manifest) => {
+            println!("Loading existing manifest for: {}", name);
+            existing_manifest
+        }
+        Err(_) => {
+            println!("Creating new manifest for: {}", name);
+            Manifest::new(
+                name.to_string(),
+                Utc::now().to_rfc3339(),
+                platform().to_string(),
+            )
+        }
+    };
 
     for app_id in app_ids {
         if let Some(app) = apps::get_app(&app_id) {
@@ -114,22 +123,27 @@ fn restore_config(backup_name: &str, app_ids: Vec<String>) -> Result<String, Str
                 }
             }
 
-            // Proceed with restoring the configuration.
-            if let Some(entry) = manifest
+            let entries_of_app = manifest
                 .entries
                 .iter()
-                .find(|e| e.target_hint == app.target_hint())
-            {
-                if let Ok(dest_paths) = app.config_path() {
-                    // Ensure parent directory exists
-                    for dest_path in dest_paths {
-                        if let Some(parent) = dest_path.parent() {
-                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                        }
-                        manifest
-                            .restore_blob_to(entry, &dest_path)
-                            .map_err(|e| e.to_string())?;
+                .filter(|e| e.target_hint == app.target_hint())
+                .collect::<Vec<_>>();
+            for entry in entries_of_app {
+                let config_paths = app
+                    .config_path()
+                    .map_err(|e| e.to_string())?;
+                let logical_path = config_paths
+                    .iter()
+                    .find(|f| {
+                        f.ends_with(&entry.tar_member.as_ref().unwrap_or(&String::default()))
+                    });
+                if let Some(dest_path) = logical_path {
+                    if let Some(parent) = dest_path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                     }
+                    manifest
+                        .restore_blob_to(entry, &dest_path)
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -141,39 +155,57 @@ fn restore_config(backup_name: &str, app_ids: Vec<String>) -> Result<String, Str
 #[tauri::command]
 fn verify_backup_integrity(backup_name: &str) -> Result<String, String> {
     let manifest = Manifest::load_from(backup_name).map_err(|e| e.to_string())?;
-    
-    let is_valid = manifest.verify_blob_chain_integrity().map_err(|e| e.to_string())?;
-    
+
+    let is_valid = manifest
+        .verify_blob_chain_integrity()
+        .map_err(|e| e.to_string())?;
+
     if is_valid {
-        Ok(format!("Backup '{}' blob chain integrity verified successfully", backup_name))
+        Ok(format!(
+            "Backup '{}' blob chain integrity verified successfully",
+            backup_name
+        ))
     } else {
-        Err(format!("Backup '{}' failed blob chain integrity verification", backup_name))
+        Err(format!(
+            "Backup '{}' failed blob chain integrity verification",
+            backup_name
+        ))
     }
 }
 
 #[tauri::command]
 fn verify_backup_chain(start_backup_name: &str) -> Result<String, String> {
     let manifest = Manifest::load_from(start_backup_name).map_err(|e| e.to_string())?;
-    
-    let is_valid = manifest.verify_blob_chain_integrity().map_err(|e| e.to_string())?;
-    
+
+    let is_valid = manifest
+        .verify_blob_chain_integrity()
+        .map_err(|e| e.to_string())?;
+
     if is_valid {
-        Ok(format!("Blob chain integrity for '{}' verified successfully", start_backup_name))
+        Ok(format!(
+            "Blob chain integrity for '{}' verified successfully",
+            start_backup_name
+        ))
     } else {
-        Err(format!("Blob chain integrity for '{}' failed verification", start_backup_name))
+        Err(format!(
+            "Blob chain integrity for '{}' failed verification",
+            start_backup_name
+        ))
     }
 }
 
 #[tauri::command]
 fn get_backup_chain_info(backup_name: &str) -> Result<BackupChainInfo, String> {
     let manifest = Manifest::load_from(backup_name).map_err(|e| e.to_string())?;
-    
+
     Ok(BackupChainInfo {
         name: manifest.name.clone(),
         backup_hash: "N/A (using blob-based blockchain)".to_string(),
         chain_hash: manifest.get_blob_chain_info().unwrap_or_default(),
         previous_backup_hash: None, // No longer used in blob-based blockchain
-        is_integrity_valid: manifest.verify_blob_chain_integrity().map_err(|e| e.to_string())?,
+        is_integrity_valid: manifest
+            .verify_blob_chain_integrity()
+            .map_err(|e| e.to_string())?,
     })
 }
 

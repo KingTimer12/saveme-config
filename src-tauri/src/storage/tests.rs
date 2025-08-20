@@ -83,7 +83,7 @@ mod tests {
         });
 
         // Test that individual blobs are valid
-        for blob in manifest.get_blobs().values() {
+        for blob in manifest.blobs.values() {
             assert!(blob.verify_blob_integrity());
         }
 

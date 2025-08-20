@@ -116,9 +116,6 @@ impl BlobChainManager {
             manager.metadata = BlobChainMetadata::new();
         }
         
-        println!("Metadata loaded successfully for backup: {}", manager.backup_name);
-        println!("Metadata: {:?}", manager.metadata);
-        
         Ok(manager)
     }
 
@@ -163,12 +160,19 @@ impl BlobChainManager {
 
         // Verify each blob in the chain and check consistency with metadata
         let mut expected_chain_hashes = Vec::new();
-        
+
         for (i, blob_id) in self.metadata.chain_order.iter().enumerate() {
             let blob = blobs.get(blob_id)
                 .ok_or_else(|| anyhow!("Missing blob in chain: {}", blob_id))?;
-            
+
             println!("Verifying blob: {}", blob_id);
+
+            // Verify that the blob file path exists on disk to maintain blockchain integrity
+            let blob_file_path = self.storage_dir.join(self.backup_name.clone()).join("blobs").join(format!("{}.tar.zst", blob_id));
+            if !blob_file_path.exists() {
+                println!("Blob file does not exist on disk: {}", blob_file_path.display());
+                return Ok(false);
+            }
 
             // Verify blob internal integrity
             if !blob.verify_blob_integrity() {
@@ -313,8 +317,8 @@ mod tests {
     fn test_blob_chain_metadata() {
         let mut metadata = BlobChainMetadata::new();
         
-        metadata.add_blob("blob1".to_string());
-        metadata.add_blob("blob2".to_string());
+        metadata.add_blob("blob1".to_string(), "hash1".to_string());
+        metadata.add_blob("blob2".to_string(), "hash2".to_string());
         
         assert_eq!(metadata.chain_order.len(), 2);
         assert_eq!(metadata.blob_positions.get("blob1"), Some(&0));

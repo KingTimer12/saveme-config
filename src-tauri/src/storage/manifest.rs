@@ -19,7 +19,7 @@ pub struct Manifest {
     pub created_at: String,
     pub os_source: String,
     pub entries: Vec<Entry>,
-    blobs: HashMap<String, BlobPayload>,
+    pub blobs: HashMap<String, BlobPayload>,
 }
 
 impl Manifest {
@@ -33,6 +33,16 @@ impl Manifest {
         }
     }
 
+    pub fn empty(name: String) -> Self {
+        Self {
+            name,
+            created_at: "".to_string(),
+            os_source: "".to_string(),
+            entries: Vec::new(),
+            blobs: HashMap::new(),
+        }
+    }
+
     pub fn base_storage_dir() -> Result<PathBuf, anyhow::Error> {
         let proj = directories::ProjectDirs::from("com", "you", "saveconfig")
             .ok_or_else(|| anyhow!("cannot get project dir"))?;
@@ -40,7 +50,14 @@ impl Manifest {
     }
 
     pub fn load_from(name: &str) -> Result<Self, anyhow::Error> {
-        let manifest_path = Self::base_storage_dir()?.join(name).join("manifest.json");
+        let manifest = Self::empty(name.to_string());
+        manifest.load()
+    }
+
+    pub fn load(&self) -> Result<Self, anyhow::Error> {
+        let manifest_path = Self::base_storage_dir()?
+            .join(&self.name)
+            .join("manifest.json");
         let content = fs::read_to_string(manifest_path)?;
         let mut manifest: Manifest = serde_json::from_str(&content)?;
         manifest.ingest_blobs_dir()?;
@@ -167,18 +184,31 @@ impl Manifest {
 
         println!("Blob saved to disk");
 
-        // Create blob and add to chain
+        // Create blob and determine previous blob hash
         let mut blob = BlobPayload::new("tar.zst".to_string(), &compressed);
 
         // Initialize blob chain manager and add blob to chain
         let storage_dir = Self::base_storage_dir()?;
         let mut chain_manager = BlobChainManager::new(storage_dir, self.name.clone())?;
+
+        let chain_info = chain_manager.get_chain_info();
+        if let Some(latest_id) = chain_info.chain_order.last() {
+            println!(
+                "Setting previous_blob_hash to latest chain id: {}",
+                latest_id
+            );
+            blob.set_previous_blob_hash(Some(latest_id.clone()));
+        } else {
+            // no chain yet — leave previous as None (genesis)
+            println!("No existing chain found; this blob will be genesis");
+        }
+
         chain_manager.add_blob_to_chain(&id, &mut blob)?;
 
         println!("Added blob to blockchain");
 
         // Adicionar blob ao manifest atual
-        self.blobs.insert(id.clone(), blob);
+        self.add_blob_for_testing(id.clone(), blob);
 
         self.entries.push({
             Entry {
@@ -211,16 +241,15 @@ impl Manifest {
 
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
-            let id = fname.split('.').next().unwrap_or_default().to_string();
+            // let id = fname.split('.').next().unwrap_or_default().to_string();
 
-            let format = if fname.ends_with(".tar.zst") {
-                "tar.zst"
-            } else {
-                "tar"
-            };
+            // let format = if fname.ends_with(".tar.zst") {
+            //     "tar.zst"
+            // } else {
+            //     "tar"
+            // };
 
-            self.blobs
-                .insert(id, BlobPayload::new(format.into(), &bytes));
+            // self.add_blob_for_testing(id, BlobPayload::new(format.into(), &bytes));
         }
         Ok(())
     }
@@ -281,11 +310,7 @@ impl Manifest {
 
         Ok(())
     }
-
-    pub fn get_blobs(&self) -> &HashMap<String, BlobPayload> {
-        &self.blobs
-    }
-
+    
     pub fn add_blob_for_testing(&mut self, blob_id: String, blob: BlobPayload) {
         self.blobs.insert(blob_id, blob);
     }
@@ -322,34 +347,5 @@ impl Manifest {
             metadata.chain_integrity_hash
         ))
     }
-
-    pub fn list_all_backups_sorted() -> Result<Vec<String>, anyhow::Error> {
-        let storage_dir = Self::base_storage_dir()?;
-        let mut backups = Vec::new();
-
-        if !storage_dir.exists() {
-            return Ok(backups);
-        }
-
-        for entry in fs::read_dir(storage_dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                let manifest_path = entry.path().join("manifest.json");
-                if manifest_path.exists() {
-                    backups.push(entry.file_name().to_string_lossy().into_owned());
-                }
-            }
-        }
-
-        // Sort by creation time
-        backups.sort_by(|a, b| {
-            let manifest_a = Self::load_from(a)
-                .unwrap_or_else(|_| Self::new(a.clone(), "".to_string(), "".to_string()));
-            let manifest_b = Self::load_from(b)
-                .unwrap_or_else(|_| Self::new(b.clone(), "".to_string(), "".to_string()));
-            manifest_a.created_at.cmp(&manifest_b.created_at)
-        });
-
-        Ok(backups)
-    }
+    
 }
