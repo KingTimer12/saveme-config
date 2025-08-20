@@ -13,7 +13,8 @@ const CreateTab = () => {
       <CardHeader>
         <CardTitle>Create a Backup</CardTitle>
         <CardDescription>
-          Select the applications you want to back up.
+          Select the applications you want to back up. Backups use maximum compression 
+          and blockchain-style integrity verification with deduplication to optimize storage.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

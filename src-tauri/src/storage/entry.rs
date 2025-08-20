@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Entry {
     pub target_hint: String,  // ex: "app:zed:settings"
     pub logical_path: String, // ex: "config/zed/settings.json"
