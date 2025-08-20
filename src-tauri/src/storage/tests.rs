@@ -1,68 +1,93 @@
 #[cfg(test)]
 mod tests {
-    use crate::storage::{manifest::Manifest, entry::Entry};
+    use crate::storage::{manifest::Manifest, entry::Entry, blobs::BlobPayload};
+    use tempfile::TempDir;
     
     #[test]
-    fn test_blockchain_integrity_calculation() {
+    fn test_blob_integrity_calculation() {
+        let mut blob = BlobPayload::new("tar.zst".to_string(), b"test data");
+        
+        // Test content hash calculation
+        let content_hash = blob.calculate_blob_content_hash();
+        assert!(!content_hash.is_empty());
+        assert_eq!(content_hash.len(), 64); // SHA256 hex length
+
+        // Test chain hash finalization
+        blob.finalize_blob_chain_hash().unwrap();
+        assert!(blob.get_blob_chain_hash().is_some());
+        assert!(!blob.get_blob_chain_hash().unwrap().is_empty());
+
+        // Test integrity verification
+        assert!(blob.verify_blob_integrity());
+    }
+
+    #[test]
+    fn test_blob_chain_linking() {
+        let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
+        let mut blob2 = BlobPayload::new("tar.zst".to_string(), b"test data 2");
+
+        // First blob (no previous)
+        blob1.finalize_blob_chain_hash().unwrap();
+        let chain_hash_1 = blob1.get_blob_chain_hash().cloned().unwrap();
+
+        // Second blob linking to first
+        blob2.set_previous_blob_hash(Some(chain_hash_1.clone()));
+        blob2.finalize_blob_chain_hash().unwrap();
+
+        // Verify the chain is properly linked
+        assert_eq!(blob2.get_previous_blob_hash(), Some(&chain_hash_1));
+        assert!(blob2.get_blob_chain_hash().is_some());
+        assert_ne!(blob2.get_blob_chain_hash().unwrap(), &chain_hash_1);
+
+        // Both should verify as valid
+        assert!(blob1.verify_blob_integrity());
+        assert!(blob2.verify_blob_integrity());
+    }
+
+    #[test]
+    fn test_manifest_blob_chain_verification() -> Result<(), anyhow::Error> {
+        let _temp_dir = TempDir::new()?;
+        
+        // Create a manifest with test data
         let mut manifest = Manifest::new(
             "test-backup".to_string(),
             "2023-01-01T00:00:00Z".to_string(),
             "linux".to_string(),
         );
 
-        // Add some test entries
+        // Simulate creating blobs through the manifest
+        // Note: This is a simplified test - in reality, blobs would be created through create_blob_from_file
+        let mut blob1 = BlobPayload::new("tar.zst".to_string(), b"test data 1");
+        let mut blob2 = BlobPayload::new("tar.zst".to_string(), b"test data 2");
+        
+        // Finalize chain hashes for the blobs
+        blob1.finalize_blob_chain_hash().unwrap();
+        blob2.finalize_blob_chain_hash().unwrap();
+        
+        manifest.add_blob_for_testing("blob1".to_string(), blob1);
+        manifest.add_blob_for_testing("blob2".to_string(), blob2);
+
+        // Add corresponding entries
         manifest.entries.push(Entry {
-            blob_id: "test-blob-1".to_string(),
-            target_hint: "app:test".to_string(),
-            logical_path: "/test/path".to_string(),
-            tar_member: Some("test.txt".to_string()),
+            blob_id: "blob1".to_string(),
+            target_hint: "app:test1".to_string(),
+            logical_path: "/test/path1".to_string(),
+            tar_member: Some("test1.txt".to_string()),
         });
 
-        // Calculate backup hash
-        let backup_hash = manifest.calculate_backup_hash().unwrap();
-        assert!(!backup_hash.is_empty());
-        assert_eq!(backup_hash.len(), 64); // SHA256 hex length
+        manifest.entries.push(Entry {
+            blob_id: "blob2".to_string(),
+            target_hint: "app:test2".to_string(),
+            logical_path: "/test/path2".to_string(),
+            tar_member: Some("test2.txt".to_string()),
+        });
 
-        // Test chain hash calculation
-        manifest.finalize_chain_hash().unwrap();
-        assert!(manifest.backup_chain_hash.is_some());
-        assert!(!manifest.backup_chain_hash.as_ref().unwrap().is_empty());
+        // Test that individual blobs are valid
+        for blob in manifest.get_blobs().values() {
+            assert!(blob.verify_blob_integrity());
+        }
 
-        // Test integrity verification
-        let is_valid = manifest.verify_backup_integrity().unwrap();
-        assert!(is_valid);
-    }
-
-    #[test]
-    fn test_blockchain_chain_linking() {
-        let mut manifest1 = Manifest::new(
-            "backup-1".to_string(),
-            "2023-01-01T00:00:00Z".to_string(),
-            "linux".to_string(),
-        );
-
-        // First backup
-        manifest1.finalize_chain_hash().unwrap();
-        let chain_hash_1 = manifest1.backup_chain_hash.clone().unwrap();
-
-        // Second backup linking to first
-        let mut manifest2 = Manifest::new(
-            "backup-2".to_string(),
-            "2023-01-02T00:00:00Z".to_string(),
-            "linux".to_string(),
-        );
-        
-        manifest2.previous_backup_hash = Some(chain_hash_1.clone());
-        manifest2.finalize_chain_hash().unwrap();
-
-        // Verify the chain is properly linked
-        assert_eq!(manifest2.previous_backup_hash.as_ref().unwrap(), &chain_hash_1);
-        assert!(manifest2.backup_chain_hash.is_some());
-        assert_ne!(manifest2.backup_chain_hash.as_ref().unwrap(), &chain_hash_1);
-
-        // Both should verify as valid
-        assert!(manifest1.verify_backup_integrity().unwrap());
-        assert!(manifest2.verify_backup_integrity().unwrap());
+        Ok(())
     }
 
     #[test]
